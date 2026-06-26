@@ -1,0 +1,20 @@
+{
+  "name": "smartfln",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "SmartFLN - AI powered QR enabled assessment system",
+  "scripts": {
+    "start:api": "node apps/api/src/main.js",
+    "test": "node --test apps/api/test/health.test.js",
+    "verify": "node --test apps/api/test/health.test.js"
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/*",
+    "services/*"
+  ],
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}
