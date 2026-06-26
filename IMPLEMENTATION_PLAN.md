@@ -15,9 +15,11 @@ This plan is designed for a production startup build, not a throwaway prototype.
 - Initial deployment is multi-tenant SaaS, with future private-cloud or government deployment options.
 - Mobile is Android-first.
 - Web admin and dashboard are browser-first.
+- MERN stack is the required product stack: MongoDB, Express.js, React, and Node.js.
+- Teacher mobile app should use React Native to stay aligned with the React ecosystem.
 - AI automation is conservative: low-confidence answers go to teacher review.
 - Binary files are stored in object storage.
-- PostgreSQL is the primary transactional database.
+- MongoDB is the primary application database.
 - Long-running scan and AI work runs through queues and workers.
 - Each milestone should keep security, auditability, and tenant isolation in view from the beginning.
 
@@ -416,7 +418,7 @@ Expected file areas:
 
 - Milestone 1.
 - Milestone 3 for assigned assessments.
-- Mobile framework selected.
+- React Native mobile foundation selected.
 
 ### Acceptance Criteria
 

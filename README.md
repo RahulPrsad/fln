@@ -234,11 +234,20 @@ SmartFLN should prefer "I am not sure; ask the teacher" over confidently assigni
 
 ## Technology Stack
 
-The recommended stack separates product application logic from AI processing so that each can scale independently.
+SmartFLN will be built on the MERN stack. This is the primary technology requirement for the product.
+
+MERN means:
+
+- MongoDB for application data
+- Express.js for REST APIs
+- React for the web dashboard and admin panel
+- Node.js for backend services, workers, and orchestration
+
+The teacher mobile app should stay in the React ecosystem through React Native unless a later product decision explicitly changes it.
 
 ### Mobile App
 
-- Flutter or React Native for Android-first and future iOS support
+- React Native for Android-first and future iOS support
 - Camera capture with real-time quality checks
 - Offline scan queue
 - Local image compression and encryption
@@ -246,15 +255,15 @@ The recommended stack separates product application logic from AI processing so 
 
 ### Web Application
 
-- Next.js or React for teacher, admin, and review dashboards
+- React for teacher, admin, and review dashboards
 - Responsive design for tablets, laptops, and school office desktops
 - Role-based analytics views
 
 ### Backend Platform
 
-- TypeScript with NestJS or Node.js for core APIs
-- Python with FastAPI for AI inference services
-- PostgreSQL for relational school, student, assessment, and result data
+- Node.js with Express.js for core APIs
+- Node.js workers for background processing and AI orchestration
+- MongoDB for school, student, assessment, scan, review, result, and analytics documents
 - Redis for caching, locks, and short-lived queues
 - Object storage such as S3-compatible storage for scanned images and processed artifacts
 - Message queue such as RabbitMQ, Kafka, or cloud-native queues for asynchronous processing
@@ -262,8 +271,9 @@ The recommended stack separates product application logic from AI processing so 
 ### Computer Vision and AI
 
 - OpenCV for image preprocessing, perspective correction, thresholding, and geometric operations
-- PyTorch for model training
-- ONNX Runtime or TensorRT for optimized inference
+- Node-compatible OpenCV and model inference bindings where production-ready
+- External model training tools may be used offline only when approved, but production application services remain MERN-oriented
+- ONNX Runtime or equivalent inference runtime may be used behind Node services when needed
 - QR decoding libraries with redundancy and fallback
 - Object detection or segmentation models for layout and answer regions when templates are insufficient
 - Handwriting recognition models tuned for age group, language, and answer type
@@ -273,7 +283,7 @@ The recommended stack separates product application logic from AI processing so 
 ### Analytics
 
 - Event and assessment data model for concept-level reporting
-- PostgreSQL materialized views for early MVP analytics
+- MongoDB aggregation pipelines and derived analytics collections for early MVP analytics
 - Data warehouse later for district-scale reporting
 - BI export to CSV, Excel, and government reporting formats
 

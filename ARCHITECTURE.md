@@ -111,7 +111,7 @@ flowchart TD
     Queue["Message Queue"]
     Workers["Background Workers"]
     AI["AI and Image Processing Services"]
-    DB["PostgreSQL Cluster"]
+    DB["MongoDB Cluster"]
     Redis["Redis Cache"]
     Storage["Object Storage"]
     Analytics["Analytics Store"]
@@ -183,7 +183,7 @@ flowchart LR
     end
 
     subgraph Data
-        Postgres["PostgreSQL"]
+        Mongo["MongoDB"]
         Redis["Redis"]
         Queue["Message Queue"]
         ObjectStore["Object Storage"]
@@ -221,13 +221,13 @@ flowchart LR
     ReviewSvc --> AnalyticsSvc
     AnalyticsSvc --> NotificationSvc
 
-    Platform --> Postgres
+    Platform --> Mongo
     Platform --> Redis
     Platform --> ObjectStore
     Platform --> Queue
     Platform --> AuditSvc
     AI --> ObjectStore
-    AI --> Postgres
+    AI --> Mongo
     AI --> ModelRegistry
     AnalyticsSvc --> Warehouse
     ExportSvc --> ObjectStore
@@ -263,8 +263,8 @@ flowchart TB
         end
 
         subgraph PrivateDataSubnet["Private Data Subnets"]
-            PGPrimary["PostgreSQL Primary"]
-            PGReplica["PostgreSQL Read Replicas"]
+            MongoPrimary["MongoDB Primary"]
+            MongoReplicas["MongoDB Replicas"]
             RedisCluster["Redis Cluster"]
             MQCluster["Message Queue Cluster"]
         end
@@ -290,8 +290,8 @@ flowchart TB
     K8sWeb --> InternalLB
     InternalLB --> K8sWorkers
     InternalLB --> K8sGPU
-    K8sWeb --> PGPrimary
-    K8sWeb --> PGReplica
+    K8sWeb --> MongoPrimary
+    K8sWeb --> MongoReplicas
     K8sWeb --> RedisCluster
     K8sWeb --> MQCluster
     K8sWorkers --> MQCluster
@@ -299,7 +299,7 @@ flowchart TB
     K8sGPU --> Obj
     K8sGPU --> ModelStore
     K8sWorkers --> Warehouse
-    PGPrimary --> Backup
+    MongoPrimary --> Backup
     Obj --> Backup
     K8sWeb --> Logs
     K8sWorkers --> Logs
@@ -413,9 +413,9 @@ sequenceDiagram
 
 ### Database Strategy
 
-SmartFLN should use PostgreSQL as the primary transactional database because the domain requires strong relational integrity, auditability, reporting joins, and predictable consistency.
+SmartFLN should use MongoDB as the primary application database because the product requirement is MERN stack.
 
-Use separate logical schemas or databases for:
+Use separate logical databases or collections for:
 
 - identity and access
 - tenant and school setup
@@ -425,7 +425,7 @@ Use separate logical schemas or databases for:
 - analytics aggregates
 - audit logs
 
-For early stages, one PostgreSQL cluster with strict schema boundaries is acceptable. At large scale, high-volume tables such as scans, answer crops, recognition results, and audit events may be partitioned or moved to dedicated clusters.
+For early stages, one MongoDB cluster with strict collection boundaries and tenant-scoped indexes is acceptable. At large scale, high-volume collections such as scans, answer crops, recognition results, and audit events may be sharded or moved to dedicated clusters.
 
 ### Data Ownership
 
@@ -1002,7 +1002,7 @@ SmartFLN should run on a cloud-native architecture with managed services where p
 | APIs and web services | Managed Kubernetes or container apps |
 | Background workers | Kubernetes worker pools or managed job platform |
 | GPU inference | GPU node pool or managed inference endpoints |
-| Transactional database | Managed PostgreSQL |
+| Transactional database | Managed MongoDB |
 | Cache | Managed Redis |
 | Queue | Managed message broker or Kafka-compatible service |
 | Object storage | S3-compatible encrypted bucket storage |
@@ -1690,7 +1690,7 @@ Mature production targets:
 
 ### Backup Strategy
 
-- Continuous PostgreSQL backups with point-in-time recovery.
+- Continuous MongoDB backups with point-in-time recovery where supported.
 - Daily full backups.
 - Cross-region backup copies.
 - Object storage versioning where cost and policy allow.
@@ -1704,7 +1704,7 @@ Mature production targets:
 flowchart LR
     subgraph Primary["Primary Region"]
         App1["Application Cluster"]
-        DB1["PostgreSQL Primary"]
+        DB1["MongoDB Primary"]
         Obj1["Object Storage"]
         MQ1["Message Queue"]
     end
@@ -1980,8 +1980,8 @@ flowchart TD
 These decisions should be made before implementation begins:
 
 - Cloud provider: AWS, Azure, GCP, or cloud-agnostic deployment.
-- Mobile framework: Flutter or React Native.
-- API backend framework: NestJS, FastAPI, or hybrid.
+- Mobile framework: React Native.
+- API backend framework: Express.js on Node.js.
 - Queue technology: RabbitMQ, Kafka, cloud-native queue, or hybrid.
 - Container platform: Kubernetes, managed container apps, or serverless workers.
 - Model serving strategy: self-hosted ONNX/TensorRT, managed inference, or hybrid.

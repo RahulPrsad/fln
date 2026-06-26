@@ -23,25 +23,24 @@ This is a database design document only. It does not contain implementation code
 
 ### Primary Transactional Database
 
-PostgreSQL is the recommended primary transactional database.
+MongoDB is the required primary application database because SmartFLN must use the MERN stack.
 
 Reasons:
 
-- strong relational constraints
-- mature indexing and partitioning
-- transactional consistency
-- JSON support for controlled metadata
-- row-level security options
-- materialized views
-- read replicas
-- point-in-time recovery
-- broad cloud support
+- native document model for assessment, scan, review, and analytics workflows
+- flexible schema evolution during early product development
+- mature indexing and aggregation pipelines
+- replica sets for high availability
+- sharding support for high-volume tenants and scan workloads
+- change streams for event-driven projections where useful
+- point-in-time recovery options through managed MongoDB providers
+- strong alignment with the MERN stack
 
 ### Supporting Stores
 
 | Store | Purpose |
 | --- | --- |
-| PostgreSQL | Source of truth for transactional and relational records |
+| MongoDB | Source of truth for application documents and academic records |
 | Object storage | Source of truth for binary files: scans, crops, processed images, PDFs, exports |
 | Redis | Cache, sessions, processing progress, locks, rate limits |
 | Message queue | Asynchronous pipeline and worker coordination |
@@ -70,7 +69,7 @@ Tenant isolation must be enforced through:
 - tenant-aware indexes
 - tenant-aware object storage paths
 - tenant-aware cache keys
-- optional PostgreSQL row-level security for high-compliance deployments
+- optional MongoDB field-level encryption and tenant-scoped access controls for high-compliance deployments
 
 Tenant-scoped tables should use composite uniqueness where needed, such as:
 
@@ -140,17 +139,17 @@ erDiagram
 
 | Domain | Tables | Source of Truth |
 | --- | --- | --- |
-| Tenant and school setup | tenant, school, academic_year, class_section | PostgreSQL |
-| Identity and access | user_account, role, permission, user_role_assignment, session | PostgreSQL plus Redis for short-lived session cache |
-| Roster | student, enrollment, guardian_contact optional | PostgreSQL |
-| Assessment authoring | assessment, question, concept, answer_key, rubric | PostgreSQL |
-| Template and paper | template_version, page_template, answer_region, print_batch, paper_instance, paper_page, qr_payload | PostgreSQL plus object storage for PDFs |
-| Scan processing | scan_batch, scan_page, processing_stage, image_artifact | PostgreSQL plus object storage |
-| AI and recognition | recognition_result, model_version, inference_run | PostgreSQL |
-| Evaluation and review | score_result, review_task, review_action | PostgreSQL |
-| Results and analytics | student_assessment_result, question_result, concept_result, aggregate tables | PostgreSQL and analytics warehouse |
-| Export | export_job, export_artifact | PostgreSQL plus object storage |
-| Audit | audit_event | Append-only PostgreSQL table or dedicated audit store |
+| Tenant and school setup | tenant, school, academic_year, class_section | MongoDB |
+| Identity and access | user_account, role, permission, user_role_assignment, session | MongoDB plus Redis for short-lived session cache |
+| Roster | student, enrollment, guardian_contact optional | MongoDB |
+| Assessment authoring | assessment, question, concept, answer_key, rubric | MongoDB |
+| Template and paper | template_version, page_template, answer_region, print_batch, paper_instance, paper_page, qr_payload | MongoDB plus object storage for PDFs |
+| Scan processing | scan_batch, scan_page, processing_stage, image_artifact | MongoDB plus object storage |
+| AI and recognition | recognition_result, model_version, inference_run | MongoDB |
+| Evaluation and review | score_result, review_task, review_action | MongoDB |
+| Results and analytics | student_assessment_result, question_result, concept_result, aggregate collections | MongoDB and analytics warehouse |
+| Export | export_job, export_artifact | MongoDB plus object storage |
+| Audit | audit_event | Append-only MongoDB collection or dedicated audit store |
 
 ## Normalization Strategy
 
@@ -487,7 +486,7 @@ Indexes:
 
 ### `user_session`
 
-Stores session metadata. Short-lived session cache may live in Redis, but durable session audit remains in PostgreSQL.
+Stores session metadata. Short-lived session cache may live in Redis, but durable session audit remains in MongoDB.
 
 | Column | Description |
 | --- | --- |
@@ -1744,15 +1743,15 @@ Analytics:
 
 #### Level 1: Pilot
 
-- Single PostgreSQL instance.
+- Single MongoDB replica set or managed cluster.
 - Strict schema boundaries.
 - Basic indexes.
 - Object storage for all images.
-- Derived analytics in PostgreSQL.
+- Derived analytics in MongoDB aggregate collections.
 
 #### Level 2: Multi-School Production
 
-- Managed PostgreSQL with read replicas.
+- Managed MongoDB with replica sets.
 - Connection pooling.
 - Partition high-volume tables.
 - Separate worker queues.
@@ -2073,7 +2072,7 @@ Sensitive data includes:
 
 ### Transactional Reporting
 
-Use PostgreSQL for:
+Use MongoDB for:
 
 - teacher review queues
 - current assessment status
@@ -2174,7 +2173,7 @@ Potential expansion:
 
 Before implementation begins:
 
-- Confirm cloud provider and managed PostgreSQL capabilities.
+- Confirm cloud provider and managed MongoDB capabilities.
 - Confirm primary key strategy.
 - Confirm tenant isolation strategy.
 - Confirm first MVP question types.
