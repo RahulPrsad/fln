@@ -19,7 +19,7 @@ SmartFLN will use MERN as the required product stack:
 - React for the web dashboard and admin panel
 - Node.js for backend services, background workers, and AI orchestration
 
-The teacher mobile app should use React Native so the mobile experience remains in the React ecosystem.
+The teacher experience was initially expected to use React Native, but this is superseded by ADR 0003 for the MVP.
 
 ## Current Foundation Impact
 
@@ -30,7 +30,7 @@ Milestone 1 should introduce or prepare for:
 - Express.js API structure
 - MongoDB connection and repository patterns
 - React web shell
-- React Native mobile continuation
+- React web teacher workflow continuation
 
 ## Consequences
 

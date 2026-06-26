@@ -4,7 +4,7 @@ AI Powered QR Enabled Assessment System
 
 ## Purpose
 
-This document defines the end-to-end workflows for SmartFLN. It explains how teachers, students, school admins, mobile apps, backend services, AI services, queues, databases, and storage systems interact from login to final reports.
+This document defines the end-to-end workflows for SmartFLN. It explains how teachers, students, school admins, the SmartFLN web app, backend services, AI services, queues, databases, and storage systems interact from login to final reports.
 
 This is a workflow document only. It does not contain implementation code.
 
@@ -26,7 +26,7 @@ This is a workflow document only. It does not contain implementation code.
 | Teacher | Logs in, scans papers, reviews doubtful answers, finalizes results |
 | School Admin | Manages rosters, assessments, reports, and school-level monitoring |
 | Program Admin | Monitors multiple schools and program-level analytics |
-| Mobile App | Captures paper images and syncs scans |
+| Teacher Web App | Captures paper images through browser camera APIs and syncs scans |
 | Web Dashboard | Provides review, analytics, and admin workflows |
 | API Gateway | Secures and routes all client API requests |
 | Backend Services | Manage business data and user workflows |
@@ -97,7 +97,7 @@ sequenceDiagram
     participant Paper as Paper Generation Service
     participant QR as QR Service
     participant Student as Student
-    participant Mobile as Teacher Mobile App
+    participant Mobile as Teacher Web App
     participant Scan as Scan Ingestion Service
     participant Queue as Message Queue
     participant Vision as Image Processing Services
@@ -300,7 +300,7 @@ The QR payload should identify:
 
 ```mermaid
 sequenceDiagram
-    participant Mobile as Mobile App
+    participant Mobile as Teacher Web App
     participant Scan as Scan Ingestion Service
     participant Queue as Message Queue
     participant QR as QR Detection Service
@@ -627,7 +627,7 @@ Allow teachers to scan student papers quickly using a mobile phone while capturi
 ```mermaid
 sequenceDiagram
     participant Teacher
-    participant App as Mobile App
+    participant App as Teacher Web App
     participant Local as Local Offline Queue
     participant Scan as Scan Ingestion Service
     participant Storage as Object Storage
@@ -1624,7 +1624,7 @@ Prevent duplicate page uploads from creating duplicate answers or marks.
 
 ```mermaid
 sequenceDiagram
-    participant App as Mobile App
+    participant App as Teacher Web App
     participant Scan as Scan Service
     participant DB as Database
     participant Teacher

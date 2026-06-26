@@ -4,7 +4,7 @@ AI Powered QR Enabled Assessment System
 
 ## Purpose
 
-This document defines the SmartFLN user experience across the teacher mobile app, admin web panel, dashboards, paper generator, paper scanner, result screens, analytics, review workflows, navigation, wireframes, UX decisions, and accessibility requirements.
+This document defines the SmartFLN user experience across the teacher web app, admin web panel, dashboards, paper generator, paper scanner, result screens, analytics, review workflows, navigation, wireframes, UX decisions, and accessibility requirements.
 
 This is a UI/UX design document only. It does not contain implementation code.
 
@@ -44,7 +44,7 @@ Admins need to see what is complete, what is blocked, what failed, and who needs
 
 ### Low-Connectivity Friendly
 
-The teacher mobile app must make offline state obvious and should never make teachers wonder whether scans are lost.
+The teacher web app must make offline and upload state obvious and should never make teachers wonder whether scans are lost.
 
 ### Accessible by Default
 
@@ -52,19 +52,20 @@ The UI should work for users with different languages, devices, lighting conditi
 
 ## Target Devices
 
-### Teacher App
+### Teacher Web App
 
 Primary:
 
-- Android phones
+- desktop browsers
+- laptop browsers
+- tablet browsers
+- phone browsers with camera support
 - 5.5 inch to 6.8 inch screens
-- budget and mid-range devices
 - intermittent connectivity
 
 Future:
 
-- Android tablets
-- iPhone
+- richer PWA installation support if pilot usage requires it
 
 ### Admin Panel
 
@@ -128,7 +129,7 @@ flowchart TD
 
 ## Global Navigation Model
 
-### Teacher Mobile Navigation
+### Teacher Web Navigation
 
 Primary bottom navigation:
 

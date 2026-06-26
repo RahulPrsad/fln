@@ -125,9 +125,9 @@ Each printed assessment carries QR metadata such as:
 
 This reduces ambiguity and makes the system robust even when pages are scanned out of order.
 
-### 2. Mobile Capture Quality Gate
+### 2. Web Camera Capture Quality Gate
 
-The teacher mobile app checks whether the paper is visible, in focus, well lit, and properly framed before upload. The goal is to catch bad images at capture time instead of failing later in processing.
+The teacher web app checks whether the paper is visible, in focus, well lit, and properly framed before upload. For MVP, teachers use the same React web app on a phone browser rather than a separate mobile app. The goal is to catch bad images at capture time instead of failing later in processing.
 
 ### 3. Document Detection and Rectification
 
@@ -243,13 +243,14 @@ MERN means:
 - React for the web dashboard and admin panel
 - Node.js for backend services, workers, and orchestration
 
-The teacher mobile app should stay in the React ecosystem through React Native unless a later product decision explicitly changes it.
+For MVP, SmartFLN will be a web app only. Teachers, admins, and reviewers use the React web application. Teachers can scan papers from a phone browser using web camera APIs where supported.
 
-### Mobile App
+### Teacher Web App
 
-- React Native for Android-first and future iOS support
+- React web app optimized for desktop, tablet, and phone browsers
+- Browser camera capture for paper scanning where supported
 - Camera capture with real-time quality checks
-- Offline scan queue
+- Offline-tolerant scan queue where browser capabilities allow
 - Local image compression and encryption
 - Teacher authentication and role-based access
 
@@ -311,7 +312,7 @@ flowchart TD
     A[Assessment Authoring] --> B[QR Paper Generation]
     B --> C[Printed Assessment]
     C --> D[Student Writes on Paper]
-    D --> E[Teacher Mobile Scan]
+    D --> E[Teacher Web Scan]
     E --> F[Capture Quality Gate]
     F --> G[Secure Upload Queue]
     G --> H[Document Processing]

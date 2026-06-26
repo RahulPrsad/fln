@@ -14,7 +14,6 @@ Start with a dependency-free Node.js API service that exposes health and version
 
 - `apps/api`
 - `apps/web`
-- `apps/mobile`
 - `services/ai`
 - `services/workers`
 - `packages/shared`

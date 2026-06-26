@@ -32,7 +32,6 @@ Implemented
 - `.env.example`
 - `apps/api/`
 - `apps/web/`
-- `apps/mobile/`
 - `services/ai/`
 - `services/workers/`
 - `packages/shared/`

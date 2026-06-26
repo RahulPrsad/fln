@@ -13,10 +13,10 @@ This plan is designed for a production startup build, not a throwaway prototype.
 - Initial product scope targets Classes 1-5 paper-based assessments.
 - MVP starts with QR identity, paper generation, scanning, page processing, MCQ scoring, simple numeric support, teacher review, basic results, and concept analytics.
 - Initial deployment is multi-tenant SaaS, with future private-cloud or government deployment options.
-- Mobile is Android-first.
+- MVP is web-app-only.
 - Web admin and dashboard are browser-first.
 - MERN stack is the required product stack: MongoDB, Express.js, React, and Node.js.
-- Teacher mobile app should use React Native to stay aligned with the React ecosystem.
+- Teacher scanning, review, and results are built into the React web app. No separate mobile app is part of the MVP.
 - AI automation is conservative: low-confidence answers go to teacher review.
 - Binary files are stored in object storage.
 - MongoDB is the primary application database.
@@ -124,7 +124,6 @@ Expected file areas:
 - `docs/`
 - `apps/api/`
 - `apps/web/`
-- `apps/mobile/`
 - `services/ai/`
 - `packages/shared/`
 - `infra/`
@@ -180,8 +179,8 @@ Expected file areas:
 - `apps/api/src/modules/users/`
 - `apps/api/src/modules/audit/`
 - `apps/web/src/app/login/`
+- `apps/web/src/app/teacher/login/`
 - `apps/web/src/layouts/admin-shell/`
-- `apps/mobile/lib/features/auth/`
 - `packages/shared/auth/`
 - `infra/secrets/`
 - `docs/openapi/auth.yaml`
@@ -376,22 +375,22 @@ Expected file areas:
 - Each paper page has a stored QR payload.
 - PDF download uses secure signed URL.
 
-## Milestone 5: Mobile Teacher App Shell
+## Milestone 5: Teacher Web App Shell
 
 ### Objectives
 
-- Build the Android-first teacher app foundation.
-- Support login, assigned assessments, local storage, and navigation.
-- Prepare offline-first scan queue architecture.
+- Build the teacher-facing web app foundation.
+- Support login, assigned assessments, browser storage, and navigation.
+- Prepare offline-tolerant browser scan queue architecture.
 
 ### Deliverables
 
-- Mobile app shell.
+- Teacher web app shell.
 - Teacher login and token refresh.
 - Tenant/school context.
 - Assigned assessment list.
 - Assessment detail screen.
-- Offline local data store.
+- Browser local data store.
 - Sync status foundation.
 - Crash/error reporting foundation.
 
@@ -399,16 +398,16 @@ Expected file areas:
 
 Expected file areas:
 
-- `apps/mobile/lib/app/`
-- `apps/mobile/lib/features/auth/`
-- `apps/mobile/lib/features/assessments/`
-- `apps/mobile/lib/features/sync/`
-- `apps/mobile/lib/features/settings/`
-- `apps/mobile/lib/core/network/`
-- `apps/mobile/lib/core/storage/`
-- `apps/mobile/lib/core/navigation/`
-- `apps/api/src/modules/mobile/`
-- `docs/openapi/mobile.yaml`
+- `apps/web/src/app/teacher/`
+- `apps/web/src/app/teacher/login/`
+- `apps/web/src/app/teacher/assessments/`
+- `apps/web/src/app/teacher/sync/`
+- `apps/web/src/app/teacher/settings/`
+- `apps/web/src/lib/network/`
+- `apps/web/src/lib/storage/`
+- `apps/web/src/lib/navigation/`
+- `apps/api/src/modules/teacher/`
+- `docs/openapi/teacher.yaml`
 
 ### Estimated Time
 
@@ -418,11 +417,11 @@ Expected file areas:
 
 - Milestone 1.
 - Milestone 3 for assigned assessments.
-- React Native mobile foundation selected.
+- React web foundation selected.
 
 ### Acceptance Criteria
 
-- Teacher can log in on Android.
+- Teacher can log in through the web app.
 - Teacher can view assigned assessments.
 - Teacher can open assessment detail.
 - App survives network loss without crashing.
@@ -453,9 +452,9 @@ Expected file areas:
 
 Expected file areas:
 
-- `apps/mobile/lib/features/scanner/`
-- `apps/mobile/lib/features/scan_queue/`
-- `apps/mobile/lib/features/sync/`
+- `apps/web/src/app/teacher/scanner/`
+- `apps/web/src/app/teacher/scan-queue/`
+- `apps/web/src/app/teacher/sync/`
 - `apps/api/src/modules/scan-batches/`
 - `apps/api/src/modules/scan-pages/`
 - `apps/api/src/modules/upload-sessions/`
@@ -512,7 +511,7 @@ Expected file areas:
 - `services/workers/src/qr-worker/`
 - `apps/api/src/modules/processing/`
 - `apps/api/src/modules/identity-resolution/`
-- `apps/mobile/lib/features/identity_resolution/`
+- `apps/web/src/app/teacher/identity-resolution/`
 - `apps/web/src/app/admin/identity-resolution/`
 - `packages/shared/events/`
 - `packages/shared/qr-schema/`
@@ -567,7 +566,7 @@ Expected file areas:
 - `services/ai/src/perspective/`
 - `services/workers/src/image-processing-worker/`
 - `apps/api/src/modules/processing-diagnostics/`
-- `apps/mobile/lib/features/rescan/`
+- `apps/web/src/app/teacher/rescan/`
 - `apps/web/src/app/admin/processing/`
 - `packages/shared/image-diagnostics/`
 
@@ -617,7 +616,7 @@ Expected file areas:
 - `services/workers/src/crop-worker/`
 - `apps/api/src/modules/answer-crops/`
 - `apps/web/src/components/answer-crop-viewer/`
-- `apps/mobile/lib/components/answer_crop_viewer/`
+- `apps/web/src/components/answer-crop-viewer/`
 - `packages/shared/template-coordinates/`
 - `packages/shared/artifacts/`
 
@@ -715,7 +714,7 @@ Expected file areas:
 - `apps/api/src/modules/review-tasks/`
 - `apps/api/src/modules/review-actions/`
 - `apps/api/src/modules/audit/`
-- `apps/mobile/lib/features/review/`
+- `apps/web/src/app/teacher/review/`
 - `apps/web/src/app/admin/reviews/`
 - `apps/web/src/components/review-evidence-panel/`
 - `packages/shared/review/`
@@ -766,7 +765,7 @@ Expected file areas:
 
 - `apps/api/src/modules/results/`
 - `apps/api/src/modules/finalization/`
-- `apps/mobile/lib/features/results/`
+- `apps/web/src/app/teacher/results/`
 - `apps/web/src/app/admin/results/`
 - `apps/web/src/components/result-table/`
 - `packages/shared/results/`
@@ -816,7 +815,7 @@ Expected file areas:
 
 - `apps/api/src/modules/analytics/`
 - `services/workers/src/analytics-worker/`
-- `apps/mobile/lib/features/analytics/`
+- `apps/web/src/app/teacher/analytics/`
 - `apps/web/src/app/admin/analytics/`
 - `apps/web/src/components/charts/`
 - `apps/web/src/components/analytics-tables/`
@@ -868,7 +867,7 @@ Expected file areas:
 - `services/workers/src/export-worker/`
 - `services/pdf-renderer/`
 - `apps/web/src/app/admin/exports/`
-- `apps/mobile/lib/features/exports/`
+- `apps/web/src/app/teacher/exports/`
 - `packages/shared/export/`
 - `templates/reports/`
 - `docs/openapi/exports.yaml`
@@ -972,7 +971,7 @@ Expected file areas:
 - `services/ai/src/line_detection/`
 - `services/workers/src/matching-recognition-worker/`
 - `apps/api/src/modules/matching-evaluation/`
-- `apps/mobile/lib/features/review/matching/`
+- `apps/web/src/app/teacher/review/matching/`
 - `apps/web/src/components/matching-evidence-viewer/`
 - `packages/shared/matching-scoring/`
 - `datasets/test/matching/`
@@ -1089,7 +1088,7 @@ Expected file areas:
 - `docs/runbooks/pilot-support.md`
 - `apps/web/src/app/admin/pilot-dashboard/`
 - `apps/api/src/modules/feedback/`
-- `apps/mobile/lib/features/help/`
+- `apps/web/src/app/teacher/help/`
 - `datasets/pilot/evaluation/`
 - `reports/pilot/`
 
@@ -1147,7 +1146,7 @@ Expected file areas:
 - `apps/web/src/app/admin/program-dashboard/`
 - `apps/web/src/app/admin/data-quality/`
 - `apps/web/src/app/admin/model-monitoring/`
-- `apps/mobile/lib/features/scanner_guidance/`
+- `apps/web/src/app/teacher/scanner-guidance/`
 - `infra/cost-monitoring/`
 - `infra/autoscaling/`
 - `docs/onboarding/`
@@ -1201,7 +1200,7 @@ Expected file areas:
 - `tests/unit/`
 - `tests/integration/`
 - `tests/e2e/`
-- `tests/mobile/`
+- `tests/web/teacher/`
 - `tests/ai-regression/`
 - `tests/accessibility/`
 - `tests/load/`

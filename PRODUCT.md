@@ -235,7 +235,7 @@ Students write answers on printed papers as usual.
 
 ### 3. Scan Papers
 
-The teacher opens the mobile app, selects the assessment, and scans each page. The app checks image quality and warns if a page is blurry, incomplete, too dark, or angled.
+The teacher opens the SmartFLN web app, selects the assessment, and scans each page using the phone browser camera where supported. The web app checks image quality and warns if a page is blurry, incomplete, too dark, or angled.
 
 ### 4. Auto Processing
 
@@ -346,9 +346,9 @@ The admin manages access, audit logs, retention, and data privacy settings.
 - Include print-safe margins and alignment markers.
 - Keep templates locked after assessment release.
 
-### Mobile Scanning
+### Web-Based Paper Scanning
 
-- Allow teachers to scan pages using phone camera.
+- Allow teachers to scan pages using the SmartFLN web app and phone browser camera where supported.
 - Detect blur, glare, low light, missing corners, incorrect page, and duplicate scan.
 - Support batch scanning for a class.
 - Support offline queueing when internet is weak.
@@ -595,7 +595,7 @@ SmartFLN must show value through:
 - Initial users are Class 1-5 schools or FLN programs.
 - Assessments are printed from SmartFLN-generated templates.
 - Each page includes QR metadata or equivalent page identity markers.
-- Teachers have access to Android smartphones.
+- Teachers have access to smartphones or school devices with modern browsers.
 - Schools can print assessment papers at acceptable quality.
 - Each question has defined marks, answer key or rubric, and concept mapping.
 - The system is allowed to store scanned answer images securely.
@@ -827,7 +827,7 @@ The MVP must prove that SmartFLN can reliably digitize and evaluate a real paper
 
 - Class 1-5 pilot assessments
 - QR-enabled printable paper generation
-- Android-first teacher scanning
+- web-based teacher scanning
 - Student, assessment, and page identification
 - Page rectification and answer cropping
 - MCQ auto-grading

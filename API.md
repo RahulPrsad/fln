@@ -681,13 +681,13 @@ Returns `202 Accepted` because PDF generation may be asynchronous.
 }
 ```
 
-## Mobile Scan APIs
+## Teacher Web Scan APIs
 
 | Method | Path | Auth | Purpose |
 | --- | --- | --- | --- |
-| GET | `/mobile/bootstrap` | Teacher | Load teacher mobile context |
-| GET | `/mobile/assessments` | Teacher | List assigned mobile assessments |
-| GET | `/mobile/assessments/{assessmentId}/scan-checklist` | Teacher | Get expected students/pages |
+| GET | `/teacher/bootstrap` | Teacher | Load teacher web context |
+| GET | `/teacher/assessments` | Teacher | List assigned teacher assessments |
+| GET | `/teacher/assessments/{assessmentId}/scan-checklist` | Teacher | Get expected students/pages |
 | POST | `/scan-batches` | Teacher | Create scan batch |
 | GET | `/scan-batches` | Teacher/admin | List scan batches |
 | GET | `/scan-batches/{scanBatchId}` | Teacher/admin | Get scan batch |
@@ -1132,7 +1132,7 @@ Swagger should define:
 | Assessments | `/assessments/*`, `/questions/*` |
 | Templates | `/templates/*`, `/page-templates/*`, `/answer-regions/*` |
 | Papers | `/print-batches/*`, `/paper-instances/*`, `/paper-pages/*` |
-| Mobile | `/mobile/*` |
+| Teacher Web | `/teacher/*` |
 | Scans | `/scan-batches/*`, `/scan-pages/*` |
 | Processing | `/processing/*`, `/answer-crops/*`, `/recognition-results/*`, `/score-results/*` |
 | Identity Resolution | `/identity-resolution-tasks/*` |
@@ -1278,4 +1278,4 @@ Before production:
 
 ## Final API Principle
 
-SmartFLN APIs must be boring in the best possible way: predictable, secure, versioned, observable, and hard to misuse. The product may do sophisticated AI work, but the API contract should remain simple and dependable for mobile apps, dashboards, integrations, and operations teams.
+SmartFLN APIs must be boring in the best possible way: predictable, secure, versioned, observable, and hard to misuse. The product may do sophisticated AI work, but the API contract should remain simple and dependable for the teacher web app, dashboards, integrations, and operations teams.
