@@ -1,0 +1,162 @@
+openapi: 3.1.0
+info:
+  title: SmartFLN Roster API
+  version: 0.2.0
+  description: Milestone 2 school, class, student, enrollment, and roster import foundation.
+paths:
+  /api/v1/schools:
+    get:
+      summary: List visible schools
+      tags: [Schools]
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Schools returned
+    post:
+      summary: Create school
+      tags: [Schools]
+      security:
+        - bearerAuth: []
+      responses:
+        "201":
+          description: School created
+        "403":
+          description: Roster management permission required
+  /api/v1/academic-years:
+    get:
+      summary: List academic years
+      tags: [Academic Years]
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Academic years returned
+    post:
+      summary: Create academic year
+      tags: [Academic Years]
+      security:
+        - bearerAuth: []
+      responses:
+        "201":
+          description: Academic year created
+  /api/v1/class-sections:
+    get:
+      summary: List visible class sections
+      tags: [Class Sections]
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Class sections returned
+    post:
+      summary: Create class section
+      tags: [Class Sections]
+      security:
+        - bearerAuth: []
+      responses:
+        "201":
+          description: Class section created
+  /api/v1/class-sections/{classSectionId}/students:
+    get:
+      summary: List students enrolled in a class section
+      tags: [Class Sections]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: classSectionId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Class roster returned
+  /api/v1/class-sections/{classSectionId}/teachers:
+    get:
+      summary: List teacher assignments for a class section
+      tags: [Class Sections]
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Teacher assignments returned
+    post:
+      summary: Assign teacher to class section
+      tags: [Class Sections]
+      security:
+        - bearerAuth: []
+      responses:
+        "201":
+          description: Teacher assignment created
+  /api/v1/students:
+    get:
+      summary: List visible students
+      tags: [Students]
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Students returned
+    post:
+      summary: Create student
+      tags: [Students]
+      security:
+        - bearerAuth: []
+      responses:
+        "201":
+          description: Student created
+  /api/v1/students/{studentId}/enrollments:
+    get:
+      summary: List student enrollments
+      tags: [Enrollments]
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Enrollments returned
+    post:
+      summary: Enroll student
+      tags: [Enrollments]
+      security:
+        - bearerAuth: []
+      responses:
+        "201":
+          description: Enrollment created
+  /api/v1/students/imports:
+    post:
+      summary: Validate roster import
+      tags: [Roster Imports]
+      security:
+        - bearerAuth: []
+      responses:
+        "201":
+          description: Import validated
+        "400":
+          description: Import context or rows invalid
+  /api/v1/students/imports/{importId}:
+    get:
+      summary: Get roster import
+      tags: [Roster Imports]
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Import returned
+  /api/v1/students/imports/{importId}/commit:
+    post:
+      summary: Commit validated roster import
+      tags: [Roster Imports]
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Import committed
+        "409":
+          description: Import still has row errors
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT

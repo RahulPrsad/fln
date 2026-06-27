@@ -209,11 +209,13 @@ Expected file areas:
 
 ## Milestone 2: School, Roster, and Class Setup
 
+Status: Implemented.
+
 ### Objectives
 
 - Allow admins to set up schools, academic years, classes, sections, teachers, students, and enrollments.
 - Enable teachers to see assigned classes.
-- Support roster import with validation.
+- Support roster import with validation. The MVP implementation supports CSV text and JSON rows; binary XLSX upload is deferred until file storage and upload handling are introduced.
 
 ### Deliverables
 
@@ -223,9 +225,10 @@ Expected file areas:
 - Student CRUD.
 - Enrollment management.
 - Teacher assignment to class/section.
-- CSV/XLSX roster import workflow.
+- CSV/JSON roster import workflow.
 - Roster validation and duplicate detection.
-- Admin screens for school, class, student, and roster import.
+- Web admin screens for school, academic year, class, student, and roster import setup.
+- Teacher assigned-class roster screen.
 
 ### Files
 
@@ -237,11 +240,9 @@ Expected file areas:
 - `apps/api/src/modules/students/`
 - `apps/api/src/modules/enrollments/`
 - `apps/api/src/modules/imports/`
-- `apps/web/src/app/admin/schools/`
-- `apps/web/src/app/admin/classes/`
-- `apps/web/src/app/admin/students/`
-- `apps/web/src/app/admin/roster-import/`
-- `packages/shared/validation/`
+- `apps/api/src/modules/roster/`
+- `apps/web/src/main.jsx`
+- `apps/web/src/styles.css`
 - `docs/openapi/roster.yaml`
 
 ### Estimated Time
@@ -252,13 +253,13 @@ Expected file areas:
 
 - Milestone 1.
 - Database migration strategy.
-- Initial roster import format agreed.
+- Initial roster import format agreed for CSV text and JSON rows.
 
 ### Acceptance Criteria
 
 - Admin can create a school, academic year, class, and section.
 - Admin can add students manually.
-- Admin can import students from a file.
+- Admin can import students from CSV text or JSON rows.
 - Import shows row-level validation errors.
 - Teacher can see assigned class after login.
 - Duplicate student warnings appear.

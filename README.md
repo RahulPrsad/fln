@@ -434,7 +434,7 @@ The product direction is informed by known limitations and capabilities in the c
 
 ## Current Project Status
 
-Milestone 1 is implemented on the `dev` branch.
+Milestone 2 is implemented on the `dev` branch.
 
 Current repository contents:
 
@@ -446,6 +446,11 @@ Current repository contents:
 - tenant, role, and permission seed primitives
 - MongoDB-ready repository boundary with in-memory development/test store
 - React web login shell for the web-only MVP
+- tenant-scoped school, academic year, class-section, student, enrollment, and teacher-assignment APIs
+- CSV/JSON roster import validation with row-level errors and duplicate warnings
+- roster import commit workflow
+- React web roster setup workspace for admins
+- React teacher class roster view for assigned classes
 - API tests using Node's built-in test runner
 - CI skeleton
 - Dockerfile for the API service
@@ -468,3 +473,10 @@ Demo credentials:
 - teacher: `teacher@smartfln.local`
 - admin: `admin@smartfln.local`
 - password: `SmartFLN@123`
+
+Milestone 2 seed data:
+
+- tenant: `ten_demo`
+- school: `sch_demo`
+- academic year: `ay_demo_2026_2027`
+- class section: `cls_demo_1a`

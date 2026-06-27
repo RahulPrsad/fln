@@ -59,6 +59,20 @@ If pnpm is not on PATH in this local workspace, use Vite directly after dependen
 node node_modules/vite/bin/vite.js build apps/web
 ```
 
+## Milestone 2 Demo Flow
+
+1. Start the API with `node apps/api/src/main.js`.
+2. Start the web app with `pnpm --filter @smartfln/web dev`.
+3. Sign in as `admin@smartfln.local` with `SmartFLN@123`.
+4. Create schools, academic years, classes, students, and roster imports from the roster setup workspace.
+5. Sign in as `teacher@smartfln.local` with `SmartFLN@123` to see the assigned demo class.
+
+CSV roster imports accept this header:
+
+```csv
+displayName,externalStudentId,admissionNumber,rollNumber
+```
+
 ## Environment Variables
 
 Copy `.env.example` to `.env` when local overrides are needed.

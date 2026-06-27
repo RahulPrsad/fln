@@ -28,6 +28,21 @@ Milestone 1 auth endpoints:
 - `GET /api/v1/roles`
 - `GET /api/v1/permissions`
 
+Milestone 2 roster endpoints:
+
+- `GET /api/v1/schools`
+- `POST /api/v1/schools`
+- `GET /api/v1/academic-years`
+- `POST /api/v1/academic-years`
+- `GET /api/v1/class-sections`
+- `POST /api/v1/class-sections`
+- `GET /api/v1/class-sections/:classSectionId/students`
+- `GET /api/v1/students`
+- `POST /api/v1/students`
+- `POST /api/v1/students/:studentId/enrollments`
+- `POST /api/v1/students/imports`
+- `POST /api/v1/students/imports/:importId/commit`
+
 Demo credentials:
 
 - teacher: `teacher@smartfln.local`
