@@ -2,12 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from '../src/server.js';
 
-async function withTestServer(assertion) {
+async function withTestServer(assertion, overrides = {}) {
   const server = createServer({
     environment: 'test',
     serviceName: 'smartfln-api',
     version: '0.1.0',
-    jwtSecret: 'test-secret'
+    jwtSecret: 'test-secret',
+    ...overrides
   });
 
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -249,6 +250,77 @@ test('complete paper assessment workflow from authoring to export', async () => 
     assert.equal(requirements.response.status, 200);
     assert.equal(requirements.body.data.requiredForProduction.some((item) => item.key === 'SMARTFLN_MONGO_URI'), true);
   });
+});
+
+test('scan page sends answer ROI crops to OCR provider', async () => {
+  const ocrCalls = [];
+  const ocrService = {
+    providerName: 'test-ocr',
+    async recognizeAnswer({ question, cropImageDataUrl }) {
+      ocrCalls.push({ questionId: question.id, cropImageDataUrl });
+      return {
+        recognizedAnswer: question.answerKey,
+        recognitionConfidence: 0.95,
+        recognizedBy: 'test-ocr:model',
+        ocrProviderStatus: 'ok'
+      };
+    }
+  };
+
+  await withTestServer(
+    async (baseUrl) => {
+      const token = await login(baseUrl, 'teacher@smartfln.local');
+      const assessmentId = 'asm_demo_math_baseline';
+      const assessmentDetail = await requestJson(`${baseUrl}/api/v1/assessments/${assessmentId}`, { token });
+      assert.equal(assessmentDetail.response.status, 200);
+      const numericQuestion = assessmentDetail.body.data.questions.find((question) => question.type === 'numeric');
+
+      const paperBatch = await requestJson(`${baseUrl}/api/v1/paper-batches`, {
+        method: 'POST',
+        token,
+        body: { assessmentId, classSectionId: 'cls_demo_1a' }
+      });
+      assert.equal(paperBatch.response.status, 201);
+      const firstPaperPage = paperBatch.body.data.paperInstances[0].pages[0];
+
+      const scanBatch = await requestJson(`${baseUrl}/api/v1/scan-batches`, {
+        method: 'POST',
+        token,
+        body: { assessmentId, classSectionId: 'cls_demo_1a' }
+      });
+      assert.equal(scanBatch.response.status, 201);
+
+      const scanPage = await requestJson(`${baseUrl}/api/v1/scan-batches/${scanBatch.body.data.id}/pages`, {
+        method: 'POST',
+        token,
+        body: {
+          qrText: firstPaperPage.qrText,
+          scanMode: 'photo_upload',
+          imageQuality: 0.72,
+          ocrCrops: [
+            {
+              questionId: numericQuestion.id,
+              cropUri: 'browser://roi/reg_demo_2',
+              imageDataUrl: 'data:image/jpeg;base64,SGVsbG8='
+            }
+          ]
+        }
+      });
+      assert.equal(scanPage.response.status, 201);
+      assert.equal(scanPage.body.data.ocrCropCount, 1);
+      assert.equal(scanPage.body.data.ocrProvider, 'test-ocr');
+      assert.equal(ocrCalls.length, 1);
+      assert.equal(ocrCalls[0].questionId, numericQuestion.id);
+
+      const crops = await requestJson(`${baseUrl}/api/v1/answer-crops?assessmentId=${assessmentId}`, { token });
+      assert.equal(crops.response.status, 200);
+      const numericCrop = crops.body.data.find((crop) => crop.questionId === numericQuestion.id);
+      assert.equal(numericCrop.recognizedAnswer, numericQuestion.answerKey);
+      assert.equal(numericCrop.recognizedBy, 'test-ocr:model');
+      assert.equal(numericCrop.status, 'auto_scored');
+    },
+    { ocrService }
+  );
 });
 
 test('teacher can scan and review but cannot author assessments', async () => {

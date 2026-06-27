@@ -78,10 +78,11 @@ The integrated workflow includes:
 - `POST /api/v1/paper-batches`
 - `GET /api/v1/paper-batches/:paperBatchId`
 - `GET /api/v1/paper-pages/:paperPageId/qr`
+- `POST /api/v1/paper-pages/resolve-qr`
 - `GET /api/v1/scan-batches`
 - `POST /api/v1/scan-batches`
 - `GET /api/v1/scan-batches/:scanBatchId`
-- `POST /api/v1/scan-batches/:scanBatchId/pages`
+- `POST /api/v1/scan-batches/:scanBatchId/pages` with `ocrCrops[]` for real answer-box recognition
 - `GET /api/v1/answer-crops`
 - `GET /api/v1/review-tasks`
 - `POST /api/v1/review-tasks/:taskId/decision`

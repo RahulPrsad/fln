@@ -85,6 +85,21 @@ export function createSystemRouter({ config, requireAuth }) {
             configured: config.objectStorageProvider !== 'r2' || configured(config.r2EndpointUrl)
           },
           {
+            key: 'SMARTFLN_OCR_PROVIDER',
+            label: 'OCR/HTR provider',
+            configured: ['disabled', 'openai'].includes(config.ocrProvider)
+          },
+          {
+            key: 'SMARTFLN_OPENAI_API_KEY',
+            label: 'OpenAI OCR provider API key',
+            configured: config.ocrProvider !== 'openai' || configured(config.openaiApiKey)
+          },
+          {
+            key: 'SMARTFLN_OPENAI_OCR_MODEL',
+            label: 'OpenAI vision OCR model',
+            configured: config.ocrProvider !== 'openai' || configured(config.openaiOcrModel)
+          },
+          {
             key: 'SMARTFLN_TWILIO_ACCOUNT_SID',
             label: 'Twilio account SID',
             configured: config.smsProvider !== 'twilio' || configured(config.twilioAccountSid)
@@ -118,7 +133,7 @@ export function createSystemRouter({ config, requireAuth }) {
         optionalIntegrations: [
           'SMS provider for OTP delivery',
           'Email provider for reports and invites',
-          'OpenAI or custom HTR model endpoint',
+          'Custom HTR model endpoint after enough labeled SmartFLN crops are collected',
           'Sentry or equivalent error tracking',
           'Analytics warehouse for large multi-school reporting'
         ]

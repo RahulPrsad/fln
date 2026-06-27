@@ -71,6 +71,7 @@ Render must be given these secret values manually:
 - `SMARTFLN_R2_ACCESS_KEY_ID`
 - `SMARTFLN_R2_SECRET_ACCESS_KEY`
 - `SMARTFLN_R2_ENDPOINT_URL`
+- `SMARTFLN_OPENAI_API_KEY`
 - `SMARTFLN_TWILIO_ACCOUNT_SID`
 - `SMARTFLN_TWILIO_AUTH_TOKEN`
 - `SMARTFLN_TWILIO_FROM_NUMBER`
@@ -84,6 +85,16 @@ Health check:
 ```
 
 Render provides the runtime `PORT`. Do not set `SMARTFLN_API_PORT` in Render unless you intentionally override the platform port.
+
+OCR/HTR scanning is enabled when:
+
+```text
+SMARTFLN_OCR_PROVIDER=openai
+SMARTFLN_OPENAI_API_KEY=<secret>
+SMARTFLN_OPENAI_OCR_MODEL=gpt-5.5
+```
+
+Do not commit the OpenAI key. Store it only in Render environment variables.
 
 ## Cloudflare R2
 

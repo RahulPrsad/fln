@@ -46,6 +46,18 @@ services:
         sync: false
       - key: SMARTFLN_R2_ENDPOINT_URL
         sync: false
+      - key: SMARTFLN_OCR_PROVIDER
+        value: openai
+      - key: SMARTFLN_OPENAI_API_KEY
+        sync: false
+      - key: SMARTFLN_OPENAI_BASE_URL
+        value: https://api.openai.com/v1
+      - key: SMARTFLN_OPENAI_OCR_MODEL
+        value: gpt-5.5
+      - key: SMARTFLN_OPENAI_IMAGE_DETAIL
+        value: high
+      - key: SMARTFLN_OCR_REQUEST_TIMEOUT_MS
+        value: "20000"
       - key: SMARTFLN_SMS_PROVIDER
         value: twilio
       - key: SMARTFLN_TWILIO_ACCOUNT_SID

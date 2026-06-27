@@ -422,7 +422,7 @@ function seedWorkflowData() {
   };
 }
 
-export function createWorkflowService(store) {
+export function createWorkflowService(store, { ocrService = null } = {}) {
   const seed = seedWorkflowData();
   const concepts = new Map(seed.concepts.map((item) => [item.id, item]));
   const assessments = new Map(seed.assessments.map((item) => [item.id, item]));
@@ -603,6 +603,18 @@ export function createWorkflowService(store) {
     };
   }
 
+  async function recognizeAnswer({ question, hasProvidedAnswer = false, providedAnswer, cropImageDataUrl, imageQuality }) {
+    if (hasProvidedAnswer) {
+      return calculateRecognition(question, providedAnswer, imageQuality);
+    }
+
+    if (cropImageDataUrl && ocrService?.recognizeAnswer) {
+      return ocrService.recognizeAnswer({ question, cropImageDataUrl });
+    }
+
+    return calculateRecognition(question, undefined, imageQuality);
+  }
+
   function evaluateCrop(crop) {
     const question = questions.get(crop.questionId);
     const exact = matchesAnswer(question, crop.recognizedAnswer);
@@ -643,7 +655,7 @@ export function createWorkflowService(store) {
     return clone(result);
   }
 
-  async function processScanPage({ tenantId, scanPage, answers = {}, imageQuality = 0.92 }) {
+  async function processScanPage({ tenantId, scanPage, answers = {}, ocrCrops = [], imageQuality = 0.92 }) {
     const qrPayload = validateQrPayload(scanPage.qrPayload);
     const paperPage = paperPages.get(qrPayload.paperPageId);
     const paperInstance = paperInstances.get(qrPayload.paperInstanceId);
@@ -656,6 +668,8 @@ export function createWorkflowService(store) {
 
     Object.assign(scanPage, {
       status: 'processed',
+      ocrCropCount: ocrCrops.length,
+      ocrProvider: ocrService?.providerName ?? 'disabled',
       studentId: paperInstance.studentId,
       assessmentId: assessment.id,
       paperInstanceId: paperInstance.id,
@@ -683,21 +697,41 @@ export function createWorkflowService(store) {
       processedAt: now()
     });
 
-    for (const region of template.answerRegions) {
-      const question = questions.get(region.questionId);
-      const recognition = calculateRecognition(question, answers[question.id], imageQuality);
-      const crop = {
-        id: id('crop'),
-        tenantId,
-        scanPageId: scanPage.id,
-        assessmentId: assessment.id,
-        studentId: paperInstance.studentId,
-        questionId: question.id,
-        answerRegionId: region.id,
-        cropUri: `memory://crops/${scanPage.id}/${region.id}`,
-        ...recognition,
-        createdAt: now()
-      };
+    const cropByQuestionId = new Map(
+      ocrCrops
+        .filter((crop) => crop?.questionId && crop?.imageDataUrl)
+        .map((crop) => [crop.questionId, crop])
+    );
+
+    const processedCrops = await Promise.all(
+      template.answerRegions.map(async (region) => {
+        const question = questions.get(region.questionId);
+        const hasProvidedAnswer = Object.prototype.hasOwnProperty.call(answers, question.id);
+        const ocrCrop = cropByQuestionId.get(question.id);
+        const recognition = await recognizeAnswer({
+          question,
+          hasProvidedAnswer,
+          providedAnswer: hasProvidedAnswer ? answers[question.id] : undefined,
+          cropImageDataUrl: ocrCrop?.imageDataUrl,
+          imageQuality
+        });
+        return {
+          id: id('crop'),
+          tenantId,
+          scanPageId: scanPage.id,
+          assessmentId: assessment.id,
+          studentId: paperInstance.studentId,
+          questionId: question.id,
+          answerRegionId: region.id,
+          cropUri: ocrCrop?.cropUri ?? `memory://crops/${scanPage.id}/${region.id}`,
+          ...recognition,
+          createdAt: now()
+        };
+      })
+    );
+
+    for (const crop of processedCrops) {
+      const question = questions.get(crop.questionId);
       Object.assign(crop, evaluateCrop(crop));
       answerCrops.set(crop.id, crop);
 
@@ -1071,7 +1105,8 @@ export function createWorkflowService(store) {
         tenantId,
         scanPage,
         answers: body.answers ?? {},
-        imageQuality: Number(body.imageQuality ?? 0.92)
+        imageQuality: Number(body.imageQuality ?? 0.92),
+        ocrCrops: Array.isArray(body.ocrCrops) ? body.ocrCrops : []
       });
       batch.status = 'processing_complete';
       batch.updatedAt = now();

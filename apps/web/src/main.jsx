@@ -90,11 +90,12 @@ async function cropAnswerRegions(file, answerRegions = [], questions = []) {
     const y = Math.max(0, Math.floor((region.y - padding) * bitmap.height));
     const width = Math.min(bitmap.width - x, Math.ceil((region.width + padding * 2) * bitmap.width));
     const height = Math.min(bitmap.height - y, Math.ceil((region.height + padding * 2) * bitmap.height));
+    const scale = Math.min(1, 1600 / width);
     const canvas = document.createElement('canvas');
-    canvas.width = width;
-    canvas.height = height;
+    canvas.width = Math.max(1, Math.round(width * scale));
+    canvas.height = Math.max(1, Math.round(height * scale));
     const context = canvas.getContext('2d');
-    context.drawImage(bitmap, x, y, width, height, 0, 0, width, height);
+    context.drawImage(bitmap, x, y, width, height, 0, 0, canvas.width, canvas.height);
     return {
       id: region.id,
       questionId: region.questionId,
@@ -398,6 +399,11 @@ function Workspace({ session, onLogout }) {
         token,
         body: {
           qrText,
+          ocrCrops: roiCrops.map((crop) => ({
+            questionId: crop.questionId,
+            cropUri: `browser://roi/${crop.id}`,
+            imageDataUrl: crop.dataUrl
+          })),
           imageQuality: 0.72,
           scanMode: 'photo_upload'
         }
@@ -713,7 +719,17 @@ function Scanner({ state, onScan, onScanFile }) {
         )}
       </Panel>
       <Panel title="Answer Crops">
-        <Table columns={['Question', 'Answer', 'Marks', 'Status']} rows={state.crops.map((crop) => [crop.questionId, String(crop.recognizedAnswer), `${crop.awardedMarks}/${crop.maxMarks}`, crop.status])} />
+        <Table
+          columns={['Question', 'Answer', 'Confidence', 'Model', 'Marks', 'Status']}
+          rows={state.crops.map((crop) => [
+            crop.questionId,
+            String(crop.recognizedAnswer),
+            `${Math.round((crop.recognitionConfidence ?? 0) * 100)}%`,
+            crop.recognizedBy,
+            `${crop.awardedMarks}/${crop.maxMarks}`,
+            crop.status
+          ])}
+        />
       </Panel>
     </section>
   );

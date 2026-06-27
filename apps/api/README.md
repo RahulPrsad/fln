@@ -54,9 +54,10 @@ Integrated workflow endpoints:
 - `GET /api/v1/paper-batches/:paperBatchId`
 - `GET /api/v1/paper-pages/:paperPageId/qr`
 - `GET /api/v1/paper-pages/:paperPageId/qr.svg`
+- `POST /api/v1/paper-pages/resolve-qr`
 - `GET /api/v1/paper-batches/:paperBatchId/print`
 - `POST /api/v1/scan-batches`
-- `POST /api/v1/scan-batches/:scanBatchId/pages`
+- `POST /api/v1/scan-batches/:scanBatchId/pages` with optional `ocrCrops[]` answer-box data URLs for OCR/HTR
 - `GET /api/v1/answer-crops`
 - `GET /api/v1/review-tasks`
 - `POST /api/v1/review-tasks/:taskId/decision`

@@ -24,7 +24,51 @@ Recommended provider classes:
 
 ## MVP Behavior
 
-The current MVP now performs QR identity resolution and answer ROI crop preview in the teacher scanner. When no OCR provider is configured, uploaded sheet scans create low-confidence crops and route them to teacher review instead of pretending to recognize handwriting.
+The current MVP performs QR identity resolution, answer ROI cropping in the teacher scanner, and provider-based OCR/HTR on each cropped answer box.
+
+The web scanner sends only the cropped answer regions to the backend, not the whole classroom photo. The backend then:
+
+- calls the configured OCR provider for each answer crop
+- stores the provider/model name on the answer crop
+- evaluates the answer against the answer key
+- auto-scores only when confidence and question policy allow it
+- sends uncertain, blank, mismatched, or unsupported answers to teacher review
+
+When no OCR provider is configured, uploaded sheet scans still create low-confidence crops and route them to teacher review instead of pretending to recognize handwriting.
+
+## OpenAI Provider
+
+The MVP includes an OpenAI vision provider using the Responses API image input path.
+
+Environment variables:
+
+```text
+SMARTFLN_OCR_PROVIDER=openai
+SMARTFLN_OPENAI_API_KEY=<secret>
+SMARTFLN_OPENAI_BASE_URL=https://api.openai.com/v1
+SMARTFLN_OPENAI_OCR_MODEL=gpt-5.5
+SMARTFLN_OPENAI_IMAGE_DETAIL=high
+SMARTFLN_OCR_REQUEST_TIMEOUT_MS=20000
+```
+
+The provider prompt asks the model to return compact JSON:
+
+```json
+{"answer":"5","confidence":0.93,"notes":"clear numeric handwriting"}
+```
+
+If the model is unavailable, times out, returns unreadable output, or the API key is missing, SmartFLN marks the crop as review-needed.
+
+## Real-Time Scan Path
+
+1. Teacher uploads or captures the printed sheet photo.
+2. Browser decodes the SmartFLN QR or accepts manual QR fallback.
+3. Browser resolves the paper and downloads the answer-region template.
+4. Browser crops each answer box ROI from the photo and compresses the crop.
+5. API creates a scan batch and scan page.
+6. API sends all ROI crops to the OCR provider in parallel.
+7. API evaluates recognized answers and updates crops, review queue, results, and analytics.
+8. Teacher sees recognized answers, confidence, model name, marks, and review status.
 
 ## Production Requirement
 

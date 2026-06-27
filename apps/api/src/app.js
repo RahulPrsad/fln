@@ -22,6 +22,7 @@ import { createTokenService } from './modules/auth/tokenService.js';
 import { createClassSectionRouter } from './modules/class-sections/classSectionRoutes.js';
 import { createEnrollmentRouter } from './modules/enrollments/enrollmentRoutes.js';
 import { createRosterImportRouter } from './modules/imports/rosterImportRoutes.js';
+import { createOcrService } from './modules/ocr/ocrService.js';
 import { createStore } from './modules/platform/storeFactory.js';
 import { createSchoolRouter } from './modules/schools/schoolRoutes.js';
 import { createStudentRouter } from './modules/students/studentRoutes.js';
@@ -33,6 +34,7 @@ import { createWorkflowRouter } from './modules/workflows/workflowRoutes.js';
 export function createApp(overrides = {}) {
   const config = { ...getRuntimeConfig(), ...overrides };
   const store = overrides.store ?? createStore(config);
+  const ocrService = overrides.ocrService ?? createOcrService(config);
   const tokenService = createTokenService(config);
   const auditService = createAuditService(store);
   const authService = createAuthService({ store, tokenService, auditService, config });
@@ -46,7 +48,7 @@ export function createApp(overrides = {}) {
   app.use(metrics);
   app.use(rateLimit(config));
   app.use(cors(config));
-  app.use(express.json({ limit: '1mb' }));
+  app.use(express.json({ limit: '15mb' }));
 
   app.get('/health/live', (request, response) => {
     sendSuccess(response, buildHealthPayload(config));
@@ -70,7 +72,9 @@ export function createApp(overrides = {}) {
       service: config.serviceName,
       environment: config.environment,
       version: config.version,
-      storeProvider: store.provider ?? config.storeProvider
+      storeProvider: store.provider ?? config.storeProvider,
+      ocrProvider: config.ocrProvider,
+      ocrModel: config.ocrProvider === 'openai' ? config.openaiOcrModel : null
     });
   });
 
@@ -87,7 +91,7 @@ export function createApp(overrides = {}) {
   app.use('/api/v1/students', createStudentRouter({ store, requireAuth, requireManageRoster }));
   app.use('/api/v1/enrollments', createEnrollmentRouter({ store, requireAuth, requireManageRoster }));
   app.use('/api/v1/system', createSystemRouter({ config, requireAuth }));
-  app.use('/api/v1', createWorkflowRouter({ store, requireAuth }));
+  app.use('/api/v1', createWorkflowRouter({ store, requireAuth, ocrService }));
   app.use('/api/v1', createAccessRouter({ store, requireAuth }));
 
   app.use(notFound);

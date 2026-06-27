@@ -38,6 +38,10 @@ paths:
     get:
       summary: Download QR SVG artifact
       tags: [Papers]
+  /api/v1/paper-pages/resolve-qr:
+    post:
+      summary: Resolve QR text to paper, student, and assessment identity
+      tags: [Papers]
   /api/v1/paper-batches/{paperBatchId}/print:
     get:
       summary: Download printable paper packet HTML
@@ -51,8 +55,43 @@ paths:
       tags: [Scanning]
   /api/v1/scan-batches/{scanBatchId}/pages:
     post:
-      summary: Upload/process scan page
+      summary: Upload/process scan page with optional OCR ROI crops
       tags: [Scanning]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [qrText]
+              properties:
+                qrText:
+                  type: string
+                  example: SFLN:pp_abc123:1a2b3c4d
+                scanMode:
+                  type: string
+                  example: photo_upload
+                imageQuality:
+                  type: number
+                  minimum: 0
+                  maximum: 1
+                answers:
+                  type: object
+                  description: Deterministic test/demo answers. Real scans should use ocrCrops.
+                ocrCrops:
+                  type: array
+                  description: Browser-cropped answer box images for OCR/HTR recognition.
+                  items:
+                    type: object
+                    required: [questionId, imageDataUrl]
+                    properties:
+                      questionId:
+                        type: string
+                      cropUri:
+                        type: string
+                      imageDataUrl:
+                        type: string
+                        description: JPEG/PNG/WebP data URL.
   /api/v1/answer-crops:
     get:
       summary: List answer crops

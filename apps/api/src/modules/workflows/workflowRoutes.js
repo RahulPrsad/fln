@@ -28,9 +28,9 @@ function requirePaperGeneration(request, response, next) {
   next();
 }
 
-export function createWorkflowRouter({ store, requireAuth }) {
+export function createWorkflowRouter({ store, requireAuth, ocrService = null }) {
   const router = Router();
-  const workflows = createWorkflowService(store);
+  const workflows = createWorkflowService(store, { ocrService });
   const requireReview = requirePermission('review:write', 'assessment:manage', 'school:manage');
   const requireExport = requirePermission('result:read', 'assessment:manage', 'school:manage');
 

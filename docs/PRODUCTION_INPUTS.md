@@ -19,6 +19,9 @@ To deploy SmartFLN for real school usage, provide these values. Do not commit se
 | R2 access key id | `SMARTFLN_R2_ACCESS_KEY_ID` | R2 S3-compatible key id |
 | R2 secret access key | `SMARTFLN_R2_SECRET_ACCESS_KEY` | R2 S3-compatible secret |
 | R2 endpoint URL | `SMARTFLN_R2_ENDPOINT_URL` | `https://<account-id>.r2.cloudflarestorage.com` |
+| OCR provider | `SMARTFLN_OCR_PROVIDER` | `openai` for the MVP model path |
+| OCR model API key | `SMARTFLN_OPENAI_API_KEY` | OpenAI API key stored only as a deployment secret |
+| OCR model | `SMARTFLN_OPENAI_OCR_MODEL` | `gpt-5.5` by default, can be changed without code deploy |
 
 ## Recommended Before Pilot
 
@@ -61,6 +64,7 @@ Production should use:
 - strong secrets
 - real domains
 - real scan upload pipeline
+- OpenAI OCR/HTR provider for answer crops
 - background workers
 - monitored AI/CV services
 

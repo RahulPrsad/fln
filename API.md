@@ -701,6 +701,27 @@ Returns `202 Accepted` because PDF generation may be asynchronous.
 | GET | `/scan-batches/{scanBatchId}/missing-pages` | Teacher/admin | List missing pages |
 | GET | `/scan-batches/{scanBatchId}/processing-summary` | Teacher/admin | Get processing progress |
 
+### MVP Scan Page Request
+
+The MERN MVP also supports direct browser scan processing at `/api/v1/scan-batches/{scanBatchId}/pages`.
+
+```json
+{
+  "qrText": "SFLN:pp_abc123:1a2b3c4d",
+  "scanMode": "photo_upload",
+  "imageQuality": 0.72,
+  "ocrCrops": [
+    {
+      "questionId": "q_demo_2",
+      "cropUri": "browser://roi/reg_demo_2",
+      "imageDataUrl": "data:image/jpeg;base64,..."
+    }
+  ]
+}
+```
+
+`ocrCrops` are answer-box ROI crops generated from the printed template coordinates. The backend sends each crop to the configured OCR/HTR provider and routes low-confidence answers to teacher review.
+
 ### Create Upload Session Request
 
 ```json
