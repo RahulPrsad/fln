@@ -28,6 +28,7 @@ export function getRuntimeConfig(env = process.env) {
     openaiBaseUrl: env.SMARTFLN_OPENAI_BASE_URL ?? 'https://api.openai.com/v1',
     openaiOcrModel: env.SMARTFLN_OPENAI_OCR_MODEL ?? 'gpt-5.5',
     openaiImageDetail: env.SMARTFLN_OPENAI_IMAGE_DETAIL ?? 'high',
+    modelServiceUrl: env.SMARTFLN_MODEL_SERVICE_URL ?? 'http://127.0.0.1:8090',
     ocrRequestTimeoutMs: Number.parseInt(env.SMARTFLN_OCR_REQUEST_TIMEOUT_MS ?? '20000', 10),
     exportRetentionDays: Number.parseInt(env.SMARTFLN_EXPORT_RETENTION_DAYS ?? '7', 10),
     rateLimitWindowMs: Number.parseInt(env.SMARTFLN_RATE_LIMIT_WINDOW_MS ?? '60000', 10),

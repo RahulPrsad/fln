@@ -16,6 +16,13 @@ The MERN product should not be edited directly when experimenting with recogniti
 
 The current API calls OpenAI vision OCR from `apps/api/src/modules/ocr/ocrService.js`.
 
+The backend can also be switched to this local model service:
+
+```text
+SMARTFLN_OCR_PROVIDER=model_service
+SMARTFLN_MODEL_SERVICE_URL=http://127.0.0.1:8090
+```
+
 Future production flow:
 
 ```text
@@ -67,3 +74,25 @@ services/model/
 3. Build OpenCV preprocessing: crop, deskew, shadow removal, contrast.
 4. Add separate detectors for MCQ, numeric, matching, and short text.
 5. Evaluate dedicated HTR models against OpenAI fallback.
+
+## Run The Scaffold Service
+
+Use the bundled or system Python runtime:
+
+```bash
+cd services/model
+python -m app.main
+```
+
+Endpoints:
+
+- `GET /health`
+- `POST /v1/infer`
+
+The scaffold intentionally returns low-confidence empty answers. It proves the contract and integration path without pretending to be a real model.
+
+Run tests:
+
+```bash
+python -m unittest discover services/model/tests
+```

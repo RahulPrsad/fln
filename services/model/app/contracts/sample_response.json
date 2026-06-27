@@ -1,0 +1,21 @@
+{
+  "scanPageId": "sp_demo",
+  "assessmentId": "asm_demo_math_baseline",
+  "studentId": "stu_demo_001",
+  "results": [
+    {
+      "questionId": "q_demo_2",
+      "recognizedAnswer": "",
+      "confidence": 0.35,
+      "needsReview": true,
+      "modelName": "smartfln-htr-scaffold",
+      "modelVersion": "0.1.0",
+      "providerStatus": "scaffold",
+      "diagnostics": {
+        "summary": "Scaffold model service reached; real OCR/HTR not enabled yet.",
+        "questionType": "numeric",
+        "imageBytes": 5
+      }
+    }
+  ]
+}

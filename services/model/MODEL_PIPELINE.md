@@ -85,3 +85,25 @@ The backend should call the model service through a stable HTTP contract. That l
 - fine-tuned custom HTR model
 
 without changing the teacher workflow.
+
+## Local Service Contract
+
+Development endpoint:
+
+```text
+POST http://127.0.0.1:8090/v1/infer
+```
+
+Sample request and response live in:
+
+```text
+services/model/app/contracts/sample_request.json
+services/model/app/contracts/sample_response.json
+```
+
+Backend switch:
+
+```text
+SMARTFLN_OCR_PROVIDER=model_service
+SMARTFLN_MODEL_SERVICE_URL=http://127.0.0.1:8090
+```

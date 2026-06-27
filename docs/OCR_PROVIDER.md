@@ -22,6 +22,15 @@ services/model
 
 The MERN backend should keep only the provider adapter and workflow orchestration. Experimental recognition code should not be added directly inside `apps/api`.
 
+To test the isolated local model service instead of OpenAI:
+
+```text
+SMARTFLN_OCR_PROVIDER=model_service
+SMARTFLN_MODEL_SERVICE_URL=http://127.0.0.1:8090
+```
+
+The scaffold service lives at `services/model/app/main.py` and exposes `POST /v1/infer`.
+
 ## Pretrained Model Layer
 
 The OCR/HTR layer must be provider-based so the product can switch models without changing teacher workflow.
