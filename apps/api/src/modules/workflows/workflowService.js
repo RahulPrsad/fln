@@ -26,6 +26,25 @@ function checksum(payload) {
   return createHash('sha256').update(JSON.stringify(payload)).digest('hex').slice(0, 16);
 }
 
+function buildPaperPageQrText(paperPageId) {
+  return `SFLN:${paperPageId}:${checksum({ paperPageId }).slice(0, 8)}`;
+}
+
+function parsePaperPageQrText(qrText) {
+  const value = normalize(qrText);
+  const match = value.match(/^SFLN:(pp_[a-z0-9]+):([a-f0-9]{8})$/i);
+  if (!match) {
+    return null;
+  }
+
+  const paperPageId = match[1];
+  const token = match[2].toLowerCase();
+  if (token !== checksum({ paperPageId }).slice(0, 8)) {
+    throw new ApiError(400, 'QR_INVALID', 'QR signature is invalid.');
+  }
+  return paperPageId;
+}
+
 function escapeHtml(value) {
   return String(value ?? '')
     .replaceAll('&', '&amp;')
@@ -35,22 +54,219 @@ function escapeHtml(value) {
     .replaceAll("'", '&#39;');
 }
 
-function renderQrSvg(payload) {
-  const encoded = JSON.stringify(payload);
-  const digest = createHash('sha256').update(encoded).digest('hex');
-  const cells = Array.from({ length: 144 }, (_, index) => {
-    const charCode = digest.charCodeAt(index % digest.length);
-    const isDark = (charCode + index + Math.floor(index / 12)) % 3 === 0;
-    const x = index % 12;
-    const y = Math.floor(index / 12);
-    return isDark ? `<rect x="${x}" y="${y}" width="1" height="1" />` : '';
-  }).join('');
-  const label = escapeHtml(payload.paperPageId);
+function createGaloisTables() {
+  const exp = new Array(512).fill(0);
+  const log = new Array(256).fill(0);
+  let value = 1;
+  for (let index = 0; index < 255; index += 1) {
+    exp[index] = value;
+    log[value] = index;
+    value <<= 1;
+    if (value & 0x100) {
+      value ^= 0x11d;
+    }
+  }
+  for (let index = 255; index < 512; index += 1) {
+    exp[index] = exp[index - 255];
+  }
+  return { exp, log };
+}
+
+const gf = createGaloisTables();
+
+function gfMultiply(left, right) {
+  if (left === 0 || right === 0) {
+    return 0;
+  }
+  return gf.exp[gf.log[left] + gf.log[right]];
+}
+
+function polyMultiply(left, right) {
+  const result = new Array(left.length + right.length - 1).fill(0);
+  for (let leftIndex = 0; leftIndex < left.length; leftIndex += 1) {
+    for (let rightIndex = 0; rightIndex < right.length; rightIndex += 1) {
+      result[leftIndex + rightIndex] ^= gfMultiply(left[leftIndex], right[rightIndex]);
+    }
+  }
+  return result;
+}
+
+function rsGenerator(degree) {
+  let generator = [1];
+  for (let index = 0; index < degree; index += 1) {
+    generator = polyMultiply(generator, [1, gf.exp[index]]);
+  }
+  return generator;
+}
+
+function reedSolomon(data, degree) {
+  const generator = rsGenerator(degree);
+  const remainder = new Array(degree).fill(0);
+  for (const byte of data) {
+    const factor = byte ^ remainder.shift();
+    remainder.push(0);
+    for (let index = 0; index < degree; index += 1) {
+      remainder[index] ^= gfMultiply(generator[index + 1], factor);
+    }
+  }
+  return remainder;
+}
+
+function appendBits(bits, value, length) {
+  for (let index = length - 1; index >= 0; index -= 1) {
+    bits.push((value >>> index) & 1);
+  }
+}
+
+function encodeQrCodewords(text) {
+  const bytes = [...Buffer.from(text, 'utf8')];
+  if (bytes.length > 53) {
+    throw new ApiError(500, 'QR_PAYLOAD_TOO_LARGE', 'QR payload is too large for the MVP QR template.');
+  }
+
+  const dataCodewordCount = 55;
+  const bits = [];
+  appendBits(bits, 0b0100, 4);
+  appendBits(bits, bytes.length, 8);
+  bytes.forEach((byte) => appendBits(bits, byte, 8));
+  const capacity = dataCodewordCount * 8;
+  appendBits(bits, 0, Math.min(4, capacity - bits.length));
+  while (bits.length % 8 !== 0) {
+    bits.push(0);
+  }
+
+  const data = [];
+  for (let index = 0; index < bits.length; index += 8) {
+    data.push(Number.parseInt(bits.slice(index, index + 8).join(''), 2));
+  }
+  const pads = [0xec, 0x11];
+  for (let index = 0; data.length < dataCodewordCount; index += 1) {
+    data.push(pads[index % 2]);
+  }
+  return [...data, ...reedSolomon(data, 15)];
+}
+
+function createQrMatrix(text) {
+  const size = 29;
+  const modules = Array.from({ length: size }, () => new Array(size).fill(false));
+  const reserved = Array.from({ length: size }, () => new Array(size).fill(false));
+
+  function set(x, y, dark, lock = true) {
+    if (x < 0 || y < 0 || x >= size || y >= size) {
+      return;
+    }
+    modules[y][x] = Boolean(dark);
+    if (lock) {
+      reserved[y][x] = true;
+    }
+  }
+
+  function finder(x, y) {
+    for (let dy = -1; dy <= 7; dy += 1) {
+      for (let dx = -1; dx <= 7; dx += 1) {
+        const xx = x + dx;
+        const yy = y + dy;
+        const dark =
+          dx >= 0 &&
+          dx <= 6 &&
+          dy >= 0 &&
+          dy <= 6 &&
+          (dx === 0 || dx === 6 || dy === 0 || dy === 6 || (dx >= 2 && dx <= 4 && dy >= 2 && dy <= 4));
+        set(xx, yy, dark, true);
+      }
+    }
+  }
+
+  function alignment(cx, cy) {
+    for (let dy = -2; dy <= 2; dy += 1) {
+      for (let dx = -2; dx <= 2; dx += 1) {
+        const distance = Math.max(Math.abs(dx), Math.abs(dy));
+        set(cx + dx, cy + dy, distance === 2 || distance === 0, true);
+      }
+    }
+  }
+
+  finder(0, 0);
+  finder(size - 7, 0);
+  finder(0, size - 7);
+  alignment(22, 22);
+
+  for (let index = 8; index < size - 8; index += 1) {
+    set(index, 6, index % 2 === 0, true);
+    set(6, index, index % 2 === 0, true);
+  }
+  set(8, size - 8, true, true);
+
+  for (let index = 0; index <= 8; index += 1) {
+    if (index !== 6) {
+      set(8, index, false, true);
+      set(index, 8, false, true);
+    }
+  }
+  for (let index = 0; index < 8; index += 1) {
+    set(size - 1 - index, 8, false, true);
+    set(8, size - 1 - index, false, true);
+  }
+
+  const codewords = encodeQrCodewords(text);
+  const dataBits = codewords.flatMap((byte) =>
+    Array.from({ length: 8 }, (_, index) => (byte >>> (7 - index)) & 1)
+  );
+  let bitIndex = 0;
+  let upward = true;
+  for (let right = size - 1; right > 0; right -= 2) {
+    if (right === 6) {
+      right -= 1;
+    }
+    for (let vertical = 0; vertical < size; vertical += 1) {
+      const y = upward ? size - 1 - vertical : vertical;
+      for (let column = 0; column < 2; column += 1) {
+        const x = right - column;
+        if (reserved[y][x]) {
+          continue;
+        }
+        let dark = dataBits[bitIndex] === 1;
+        bitIndex += 1;
+        if ((x + y) % 2 === 0) {
+          dark = !dark;
+        }
+        set(x, y, dark, true);
+      }
+    }
+    upward = !upward;
+  }
+
+  const format = 0x77c4;
+  function bit(index) {
+    return ((format >>> index) & 1) === 1;
+  }
+  for (let index = 0; index <= 5; index += 1) set(8, index, bit(index), true);
+  set(8, 7, bit(6), true);
+  set(8, 8, bit(7), true);
+  set(7, 8, bit(8), true);
+  for (let index = 9; index < 15; index += 1) set(14 - index, 8, bit(index), true);
+  for (let index = 0; index < 8; index += 1) set(size - 1 - index, 8, bit(index), true);
+  for (let index = 8; index < 15; index += 1) set(8, size - 15 + index, bit(index), true);
+
+  return modules;
+}
+
+function renderQrSvg(qrText, label = qrText) {
+  const modules = createQrMatrix(qrText);
+  const size = modules.length;
+  const quiet = 4;
+  const total = size + quiet * 2;
+  const cells = modules
+    .flatMap((row, y) =>
+      row.map((dark, x) => (dark ? `<rect x="${x + quiet}" y="${y + quiet}" width="1" height="1" />` : ''))
+    )
+    .join('');
+  const escapedLabel = escapeHtml(label);
   return `<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 12 14" role="img" aria-label="SmartFLN QR ${label}">
-  <rect width="12" height="14" fill="#fff"/>
-  <g fill="#111827">${cells}</g>
-  <text x="0.2" y="13.4" font-size="0.7" fill="#111827">${label.slice(0, 16)}</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${total} ${total + 4}" role="img" aria-label="SmartFLN QR ${escapedLabel}">
+  <rect width="${total}" height="${total + 4}" fill="#fff"/>
+  <g fill="#111827" shape-rendering="crispEdges">${cells}</g>
+  <text x="${quiet}" y="${total + 2.7}" font-size="1.6" fill="#111827">${escapedLabel.slice(0, 26)}</text>
 </svg>`;
 }
 
@@ -346,11 +562,36 @@ export function createWorkflowService(store) {
     return payload;
   }
 
+  function resolveQrPayloadFromText(tenantId, qrText) {
+    const paperPageId = parsePaperPageQrText(qrText);
+    if (!paperPageId) {
+      try {
+        return validateQrPayload(JSON.parse(qrText));
+      } catch {
+        throw new ApiError(400, 'QR_INVALID', 'QR text is not a SmartFLN paper identity.');
+      }
+    }
+
+    const page = paperPages.get(paperPageId);
+    if (!page || page.tenantId !== tenantId) {
+      throw new ApiError(404, 'PAPER_PAGE_NOT_FOUND', 'Paper page was not found for this QR.');
+    }
+    return page.qrPayload;
+  }
+
   function getResultKey(assessmentId, studentId) {
     return `${assessmentId}:${studentId}`;
   }
 
   function calculateRecognition(question, providedAnswer, imageQuality = 0.92) {
+    if (providedAnswer === undefined) {
+      return {
+        recognizedAnswer: '',
+        recognitionConfidence: Number(Math.max(0.38, Math.min(0.58, imageQuality - 0.22)).toFixed(2)),
+        recognizedBy: 'image-upload-htr-pending'
+      };
+    }
+
     const answer = providedAnswer ?? question.answerKey;
     const exact = matchesAnswer(question, answer);
     const typePenalty = question.type === 'matching' ? 0.2 : question.type === 'short_text' ? 0.08 : 0;
@@ -635,6 +876,7 @@ export function createWorkflowService(store) {
             generatedAt: now()
           };
           page.qrPayload = buildQrPayload({ tenantId, assessment, paperInstance: instance, paperPage: page });
+          page.qrText = buildPaperPageQrText(page.id);
           paperPages.set(page.id, page);
         }
       }
@@ -658,7 +900,7 @@ export function createWorkflowService(store) {
           }))
       };
     },
-    async getPrintablePaperBatch({ tenantId, paperBatchId }) {
+    async getPrintablePaperBatch({ tenantId, paperBatchId, studentId = null }) {
       await ensureLoaded();
       const batch = await this.getPaperBatch({ tenantId, paperBatchId });
       const assessment = ensureAssessment(tenantId, batch.assessmentId);
@@ -669,19 +911,34 @@ export function createWorkflowService(store) {
         status: 'active'
       });
       const studentById = new Map(students.map((student) => [student.id, student]));
-      const pages = batch.paperInstances
+      const printableInstances = batch.paperInstances.filter((instance) => !studentId || instance.studentId === studentId);
+      if (printableInstances.length === 0) {
+        throw new ApiError(404, 'PAPER_INSTANCE_NOT_FOUND', 'Printable paper was not found for this student.');
+      }
+
+      const pages = printableInstances
         .map((instance) => {
           const student = studentById.get(instance.studentId);
           const page = instance.pages[0];
+          const qrText = page.qrText ?? buildPaperPageQrText(page.id);
           return `<article class="paper">
+            <div class="scan-corner top-left"></div>
+            <div class="scan-corner top-right"></div>
+            <div class="scan-corner bottom-left"></div>
+            <div class="scan-corner bottom-right"></div>
             <header>
               <div>
-                <p class="eyebrow">SmartFLN Paper</p>
+                <p class="eyebrow">SmartFLN Printable Assessment</p>
                 <h1>${escapeHtml(assessment.title)}</h1>
                 <p>${escapeHtml(student?.displayName ?? instance.studentId)} · Page ${page.pageNumber}</p>
               </div>
-              <div class="qr">${renderQrSvg(page.qrPayload)}</div>
+              <div class="qr">${renderQrSvg(qrText, page.id)}</div>
             </header>
+            <section class="identity-row">
+              <span>Name: <b>${escapeHtml(student?.displayName ?? '')}</b></span>
+              <span>Roll: <b>${escapeHtml(student?.externalStudentId ?? '')}</b></span>
+              <span>Paper ID: <b>${escapeHtml(page.id)}</b></span>
+            </section>
             ${items.map(renderQuestion).join('')}
           </article>`;
         })
@@ -697,18 +954,26 @@ export function createWorkflowService(store) {
   <meta charset="utf-8">
   <title>${escapeHtml(assessment.title)} Papers</title>
   <style>
-    body { margin: 0; color: #111827; font-family: Arial, sans-serif; }
-    .paper { width: 210mm; min-height: 297mm; padding: 18mm; page-break-after: always; }
+    body { margin: 0; color: #111827; font-family: Arial, sans-serif; background: #fff; }
+    .paper { position: relative; width: 210mm; min-height: 297mm; padding: 16mm; page-break-after: always; border: 3px solid #111827; }
+    .scan-corner { position: absolute; width: 17mm; height: 17mm; border-color: #111827; }
+    .top-left { top: 6mm; left: 6mm; border-top: 4px solid; border-left: 4px solid; }
+    .top-right { top: 6mm; right: 6mm; border-top: 4px solid; border-right: 4px solid; }
+    .bottom-left { bottom: 6mm; left: 6mm; border-bottom: 4px solid; border-left: 4px solid; }
+    .bottom-right { bottom: 6mm; right: 6mm; border-bottom: 4px solid; border-right: 4px solid; }
     header { display: flex; justify-content: space-between; gap: 16px; border-bottom: 2px solid #111827; padding-bottom: 12px; }
     .eyebrow { margin: 0 0 4px; font-size: 11px; font-weight: 700; text-transform: uppercase; }
     h1 { margin: 0 0 8px; font-size: 22px; }
     h2 { margin: 0 0 10px; font-size: 15px; }
-    .qr svg { width: 34mm; height: 39mm; }
-    .question { margin-top: 18px; }
+    .qr svg { width: 38mm; height: 42mm; }
+    .identity-row { display: grid; grid-template-columns: 1.4fr 1fr 1.2fr; gap: 8px; margin: 10px 0 6px; font-size: 12px; }
+    .identity-row span { border-bottom: 1px solid #111827; padding-bottom: 3px; }
+    .question { margin-top: 14px; break-inside: avoid; }
     .options { display: flex; gap: 10px; margin-bottom: 10px; }
     .option { min-width: 36px; border: 1px solid #111827; border-radius: 999px; padding: 6px 10px; text-align: center; }
-    .answer-box { min-height: 34mm; border: 1.5px solid #111827; border-radius: 4px; }
+    .answer-box { min-height: 30mm; border: 1.5px solid #111827; border-radius: 4px; background: repeating-linear-gradient(#fff 0, #fff 8mm, #eef2f7 8.1mm); }
     @media print { .paper { page-break-after: always; } }
+    @page { size: A4; margin: 0; }
   </style>
 </head>
 <body>${pages}</body>
@@ -721,7 +986,7 @@ export function createWorkflowService(store) {
       if (!page || page.tenantId !== tenantId) {
         throw new ApiError(404, 'PAPER_PAGE_NOT_FOUND', 'Paper page was not found.');
       }
-      return clone(page.qrPayload);
+      return clone({ ...page.qrPayload, qrText: page.qrText ?? buildPaperPageQrText(page.id) });
     },
     async getPaperPageQrSvg({ tenantId, paperPageId }) {
       await ensureLoaded();
@@ -730,8 +995,28 @@ export function createWorkflowService(store) {
         paperPageId,
         fileName: `${paperPageId}.svg`,
         contentType: 'image/svg+xml',
-        content: renderQrSvg(payload)
+        content: renderQrSvg(payload.qrText, paperPageId)
       };
+    },
+    async resolveQrText({ tenantId, qrText }) {
+      await ensureLoaded();
+      const qrPayload = resolveQrPayloadFromText(tenantId, qrText);
+      const page = paperPages.get(qrPayload.paperPageId);
+      const instance = paperInstances.get(qrPayload.paperInstanceId);
+      const assessment = ensureAssessment(tenantId, qrPayload.assessmentId);
+      const students = await store.listStudents({ tenantId, studentIds: [qrPayload.studentId] });
+      return clone({
+        qrText,
+        qrPayload,
+        paperPage: page,
+        paperInstance: instance,
+        assessment: {
+          id: assessment.id,
+          title: assessment.title,
+          classSectionId: assessment.classSectionId
+        },
+        student: students[0] ?? { id: qrPayload.studentId }
+      });
     },
     async createScanBatch({ tenantId, createdByUserId, body }) {
       await ensureLoaded();
@@ -776,7 +1061,9 @@ export function createWorkflowService(store) {
         tenantId,
         scanBatchId,
         status: 'uploaded',
-        qrPayload: body.qrPayload,
+        qrPayload: body.qrPayload ?? resolveQrPayloadFromText(tenantId, body.qrText),
+        qrText: body.qrText,
+        scanMode: body.scanMode ?? 'web_scan',
         uploadedAt: now()
       };
       scanPages.set(scanPage.id, scanPage);

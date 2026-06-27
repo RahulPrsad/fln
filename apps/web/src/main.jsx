@@ -13,7 +13,7 @@ const accounts = {
 };
 
 const adminTabs = ['Dashboard', 'Roster', 'Assessments', 'Papers', 'Scanner', 'Review', 'Results', 'Analytics', 'Exports'];
-const teacherTabs = ['Dashboard', 'Assessments', 'Scanner', 'Review', 'Results', 'Analytics', 'Exports'];
+const teacherTabs = ['Dashboard', 'Assessments', 'Papers', 'Scanner', 'Review', 'Results', 'Analytics', 'Exports'];
 
 async function api(path, { token, method = 'GET', body = null } = {}) {
   const response = await fetch(`${apiBaseUrl}${path}`, {
@@ -53,6 +53,58 @@ async function downloadArtifact(path, token) {
 
 function canManage(user) {
   return user?.permissions?.some((permission) => ['school:manage', 'roster:manage', 'assessment:manage'].includes(permission));
+}
+
+function canGeneratePapers(user) {
+  return canManage(user) || user?.permissions?.includes('scan:create');
+}
+
+async function decodeQrFromImage(file) {
+  if (!file) {
+    throw new Error('Select a scanned paper image first.');
+  }
+  if (!('BarcodeDetector' in window)) {
+    throw new Error('This browser cannot read QR codes automatically. Type the QR text printed below the QR code.');
+  }
+  const detector = new BarcodeDetector({ formats: ['qr_code'] });
+  const bitmap = await createImageBitmap(file);
+  const codes = await detector.detect(bitmap);
+  bitmap.close?.();
+  const rawValue = codes[0]?.rawValue;
+  if (!rawValue) {
+    throw new Error('No SmartFLN QR found. Retake the photo with the QR clearly visible.');
+  }
+  return rawValue;
+}
+
+async function cropAnswerRegions(file, answerRegions = [], questions = []) {
+  if (!file) {
+    return [];
+  }
+
+  const bitmap = await createImageBitmap(file);
+  const questionById = new Map(questions.map((question) => [question.id, question]));
+  const crops = answerRegions.map((region, index) => {
+    const padding = 0.012;
+    const x = Math.max(0, Math.floor((region.x - padding) * bitmap.width));
+    const y = Math.max(0, Math.floor((region.y - padding) * bitmap.height));
+    const width = Math.min(bitmap.width - x, Math.ceil((region.width + padding * 2) * bitmap.width));
+    const height = Math.min(bitmap.height - y, Math.ceil((region.height + padding * 2) * bitmap.height));
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext('2d');
+    context.drawImage(bitmap, x, y, width, height, 0, 0, width, height);
+    return {
+      id: region.id,
+      questionId: region.questionId,
+      label: `Q${index + 1}`,
+      prompt: questionById.get(region.questionId)?.prompt ?? region.questionId,
+      dataUrl: canvas.toDataURL('image/jpeg', 0.86)
+    };
+  });
+  bitmap.close?.();
+  return crops;
 }
 
 function App() {
@@ -141,6 +193,8 @@ function Workspace({ session, onLogout }) {
     selectedClassId: 'cls_demo_1a',
     paperBatch: null,
     scanBatch: null,
+    scanOutput: null,
+    roiCrops: [],
     crops: [],
     reviewTasks: [],
     results: [],
@@ -310,11 +364,54 @@ function Workspace({ session, onLogout }) {
       await api(`/api/v1/scan-batches/${scanBatch.id}/pages`, {
         method: 'POST',
         token,
-        body: { qrPayload: page.qrPayload, answers, imageQuality: 0.78 }
+        body: { qrText: page.qrText, answers, imageQuality: 0.78 }
       });
       setState((current) => ({ ...current, paperBatch, scanBatch }));
       return { assessmentId: state.selectedAssessmentId };
     }, 'Scan processed.');
+  }
+
+  async function scanUploadedPaper({ file, manualQrText }) {
+    return runAction(async () => {
+      const qrText = manualQrText?.trim() || (await decodeQrFromImage(file));
+      const resolved = await api('/api/v1/paper-pages/resolve-qr', {
+        method: 'POST',
+        token,
+        body: { qrText }
+      });
+      const assessmentDetail = await api(`/api/v1/assessments/${resolved.assessment.id}`, { token });
+      const roiCrops = await cropAnswerRegions(
+        file,
+        assessmentDetail.template?.answerRegions ?? [],
+        assessmentDetail.questions ?? []
+      );
+      const scanBatch = await api('/api/v1/scan-batches', {
+        method: 'POST',
+        token,
+        body: {
+          assessmentId: resolved.assessment.id,
+          classSectionId: resolved.assessment.classSectionId
+        }
+      });
+      const scanPage = await api(`/api/v1/scan-batches/${scanBatch.id}/pages`, {
+        method: 'POST',
+        token,
+        body: {
+          qrText,
+          imageQuality: 0.72,
+          scanMode: 'photo_upload'
+        }
+      });
+      setState((current) => ({
+        ...current,
+        selectedAssessmentId: resolved.assessment.id,
+        selectedClassId: resolved.assessment.classSectionId,
+        scanBatch,
+        scanOutput: { resolved, scanPage },
+        roiCrops
+      }));
+      return { assessmentId: resolved.assessment.id };
+    }, 'Photo scan processed. Doubtful answers are ready for review.');
   }
 
   async function resolveReview(task) {
@@ -386,7 +483,7 @@ function Workspace({ session, onLogout }) {
       {activeTab === 'Roster' ? <Roster state={state} /> : null}
       {activeTab === 'Assessments' ? <Assessments state={state} setState={setState} onAssess={createAssessmentFlow} user={session.user} /> : null}
       {activeTab === 'Papers' ? <Papers state={state} token={token} onPapers={generatePapers} setNotice={setNotice} /> : null}
-      {activeTab === 'Scanner' ? <Scanner state={state} onScan={processScan} /> : null}
+      {activeTab === 'Scanner' ? <Scanner state={state} onScan={processScan} onScanFile={scanUploadedPaper} /> : null}
       {activeTab === 'Review' ? <Review state={state} onResolve={resolveReview} /> : null}
       {activeTab === 'Results' ? <Results state={state} onFinalize={finalizeResults} /> : null}
       {activeTab === 'Analytics' ? <Analytics analytics={state.analytics} /> : null}
@@ -406,8 +503,8 @@ function Dashboard({ state, user, onAssess, onPapers, onScan, onReview, onFinali
       <Panel title="Workflow">
         <div className="action-row">
           {canManage(user) ? <button onClick={onAssess}>Create Assessment</button> : null}
-          {canManage(user) ? <button onClick={onPapers}>Generate Papers</button> : null}
-          <button onClick={onScan}>Process Scan</button>
+          {canGeneratePapers(user) ? <button onClick={onPapers}>Generate Papers</button> : null}
+          <button onClick={onScan}>Run Demo Scan</button>
           {firstTask ? <button onClick={() => onReview(firstTask)}>Resolve Review</button> : null}
           <button className="secondary" onClick={onFinalize}>Finalize</button>
           <button className="secondary" onClick={onExport}>Export</button>
@@ -470,17 +567,31 @@ function Papers({ state, token, onPapers, setNotice }) {
       <Panel title="Paper Batch">
         <button onClick={onPapers}>Generate Student Papers</button>
         {state.paperBatch ? (
-          <button
-            className="secondary"
-            onClick={() =>
-              downloadArtifact(`/api/v1/paper-batches/${state.paperBatch.id}/print`, token).catch((error) =>
-                setNotice(error.message)
-              )
-            }
-            type="button"
-          >
-            Download Printable Packet
-          </button>
+          <>
+            <button
+              className="secondary"
+              onClick={() =>
+                downloadArtifact(
+                  `/api/v1/paper-batches/${state.paperBatch.id}/print?studentId=${state.paperBatch.paperInstances?.[0]?.studentId}`,
+                  token
+                ).catch((error) => setNotice(error.message))
+              }
+              type="button"
+            >
+              Download One Paper
+            </button>
+            <button
+              className="secondary"
+              onClick={() =>
+                downloadArtifact(`/api/v1/paper-batches/${state.paperBatch.id}/print`, token).catch((error) =>
+                  setNotice(error.message)
+                )
+              }
+              type="button"
+            >
+              Download Full Packet
+            </button>
+          </>
         ) : null}
         <Metric label="Papers" value={state.paperBatch?.paperInstances?.length ?? 0} />
       </Panel>
@@ -513,12 +624,93 @@ function Papers({ state, token, onPapers, setNotice }) {
   );
 }
 
-function Scanner({ state, onScan }) {
+function Scanner({ state, onScan, onScanFile }) {
+  const [selectedFile, setSelectedFile] = useState(null);
+  const [manualQrText, setManualQrText] = useState('');
+  const [previewUrl, setPreviewUrl] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  function chooseFile(event) {
+    const file = event.target.files?.[0] ?? null;
+    setSelectedFile(file);
+    setPreviewUrl((current) => {
+      if (current) URL.revokeObjectURL(current);
+      return file ? URL.createObjectURL(file) : '';
+    });
+  }
+
+  async function submitScan() {
+    setBusy(true);
+    try {
+      await onScanFile({ file: selectedFile, manualQrText });
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <section className="content-grid">
-      <Panel title="Scan Processing">
-        <button onClick={onScan}>Run Web Scan Pipeline</button>
+      <Panel title="Scan Sheet">
+        <div className="stack">
+          <label>
+            Paper photo
+            <input accept="image/*" capture="environment" onChange={chooseFile} type="file" />
+          </label>
+          {previewUrl ? <img alt="Selected paper scan" className="scan-preview" src={previewUrl} /> : null}
+          <label>
+            QR text fallback
+            <input
+              placeholder="SFLN:pp_..."
+              value={manualQrText}
+              onChange={(event) => setManualQrText(event.target.value)}
+            />
+          </label>
+          <div className="action-row">
+            <button disabled={busy || (!selectedFile && !manualQrText.trim())} onClick={submitScan} type="button">
+              {busy ? 'Scanning' : 'Scan Uploaded Sheet'}
+            </button>
+            <button className="secondary" onClick={onScan} type="button">
+              Run Demo Scan
+            </button>
+          </div>
+        </div>
         <Pipeline state={state} />
+      </Panel>
+      <Panel title="Scan Output">
+        {state.scanOutput ? (
+          <div className="scan-output">
+            <Metric label="Student" value={state.scanOutput.resolved.student.displayName ?? state.scanOutput.resolved.student.id} />
+            <Metric label="Paper Page" value={state.scanOutput.resolved.paperPage.id} />
+            <Metric label="Status" value={state.scanOutput.scanPage.status} />
+            <Metric label="QR Confidence" value={`${Math.round((state.scanOutput.scanPage.quality?.qrConfidence ?? 0) * 100)}%`} />
+            <div className="pipeline">
+              {(state.scanOutput.scanPage.pipeline ?? []).map((step) => (
+                <span className="done" key={step}>
+                  {step.replaceAll('_', ' ')}
+                </span>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <p className="muted">Upload a printed sheet photo. The system will identify the paper and queue answer crops.</p>
+        )}
+      </Panel>
+      <Panel title="Answer ROI Crops">
+        {state.roiCrops.length > 0 ? (
+          <div className="roi-grid">
+            {state.roiCrops.map((crop) => (
+              <figure className="roi-card" key={crop.id}>
+                <img alt={`${crop.label} answer crop`} src={crop.dataUrl} />
+                <figcaption>
+                  <strong>{crop.label}</strong>
+                  <span>{crop.prompt}</span>
+                </figcaption>
+              </figure>
+            ))}
+          </div>
+        ) : (
+          <p className="muted">ROI crops will appear here after scanning a photographed sheet.</p>
+        )}
       </Panel>
       <Panel title="Answer Crops">
         <Table columns={['Question', 'Answer', 'Marks', 'Status']} rows={state.crops.map((crop) => [crop.questionId, String(crop.recognizedAnswer), `${crop.awardedMarks}/${crop.maxMarks}`, crop.status])} />

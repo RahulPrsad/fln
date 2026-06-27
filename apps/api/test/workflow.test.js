@@ -134,6 +134,16 @@ test('complete paper assessment workflow from authoring to export', async () => 
     const qr = await requestJson(`${baseUrl}/api/v1/paper-pages/${firstPaperPage.id}/qr`, { token });
     assert.equal(qr.response.status, 200);
     assert.equal(qr.body.data.paperPageId, firstPaperPage.id);
+    assert.equal(qr.body.data.qrText.startsWith('SFLN:'), true);
+
+    const resolvedQr = await requestJson(`${baseUrl}/api/v1/paper-pages/resolve-qr`, {
+      method: 'POST',
+      token,
+      body: { qrText: qr.body.data.qrText }
+    });
+    assert.equal(resolvedQr.response.status, 200);
+    assert.equal(resolvedQr.body.data.paperPage.id, firstPaperPage.id);
+    assert.equal(resolvedQr.body.data.student.id, firstPaperPage.studentId);
 
     const qrSvg = await fetch(`${baseUrl}/api/v1/paper-pages/${firstPaperPage.id}/qr.svg`, {
       headers: { Authorization: `Bearer ${token}` }
@@ -147,7 +157,18 @@ test('complete paper assessment workflow from authoring to export', async () => 
     });
     assert.equal(printable.status, 200);
     assert.equal(printable.headers.get('content-type').includes('text/html'), true);
-    assert.equal((await printable.text()).includes('SmartFLN Paper'), true);
+    const printableHtml = await printable.text();
+    assert.equal(printableHtml.includes('SmartFLN Printable Assessment'), true);
+    assert.equal(printableHtml.includes('scan-corner'), true);
+
+    const singlePrintable = await fetch(
+      `${baseUrl}/api/v1/paper-batches/${paperBatch.body.data.id}/print?studentId=${firstPaperPage.studentId}`,
+      {
+        headers: { Authorization: `Bearer ${token}` }
+      }
+    );
+    assert.equal(singlePrintable.status, 200);
+    assert.equal((await singlePrintable.text()).includes(firstPaperPage.id), true);
 
     const scanBatch = await requestJson(`${baseUrl}/api/v1/scan-batches`, {
       method: 'POST',
@@ -163,7 +184,7 @@ test('complete paper assessment workflow from authoring to export', async () => 
       method: 'POST',
       token,
       body: {
-        qrPayload: qr.body.data,
+        qrText: qr.body.data.qrText,
         imageQuality: 0.78,
         answers: {
           [mcq.body.data.id]: '3',
@@ -285,7 +306,7 @@ test('teacher can scan and review but cannot author assessments', async () => {
       method: 'POST',
       token,
       body: {
-        qrPayload: firstPaperPage.qrPayload,
+        qrText: firstPaperPage.qrText,
         imageQuality: 0.78,
         answers
       }

@@ -156,7 +156,8 @@ export function createWorkflowRouter({ store, requireAuth }) {
     asyncHandler(async (request, response) => {
       const artifact = await workflows.getPrintablePaperBatch({
         tenantId: request.auth.user.tenantId,
-        paperBatchId: request.params.paperBatchId
+        paperBatchId: request.params.paperBatchId,
+        studentId: request.query.studentId
       });
       response
         .status(200)
@@ -174,6 +175,20 @@ export function createWorkflowRouter({ store, requireAuth }) {
         await workflows.getPaperPageQr({
           tenantId: request.auth.user.tenantId,
           paperPageId: request.params.paperPageId
+        })
+      );
+    })
+  );
+
+  router.post(
+    '/paper-pages/resolve-qr',
+    asyncHandler(async (request, response) => {
+      requiredString(request.body.qrText, 'qrText');
+      sendSuccess(
+        response,
+        await workflows.resolveQrText({
+          tenantId: request.auth.user.tenantId,
+          qrText: request.body.qrText
         })
       );
     })
