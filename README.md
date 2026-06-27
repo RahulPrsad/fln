@@ -490,3 +490,8 @@ Current AI/CV note:
 - The app now implements the full SmartFLN workflow shape end to end.
 - Actual trained computer vision, QR image decoding, handwritten text recognition, and PDF rendering engines are represented by deterministic service boundaries and testable placeholder outputs.
 - Those boundaries are intentionally isolated so real model workers and QR/PDF libraries can replace the deterministic implementation without changing the user workflow.
+
+Production handoff docs:
+
+- `docs/PRODUCTION_INPUTS.md`
+- `docs/PRODUCTION_READINESS.md`

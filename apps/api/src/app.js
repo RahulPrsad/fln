@@ -1,7 +1,16 @@
 import express from 'express';
 import { getRuntimeConfig } from './config.js';
 import { buildHealthPayload } from './health.js';
-import { cors, errorHandler, notFound, requestContext } from './common/middleware.js';
+import {
+  cors,
+  errorHandler,
+  getMetricsSnapshot,
+  metrics,
+  notFound,
+  rateLimit,
+  requestContext,
+  securityHeaders
+} from './common/middleware.js';
 import { sendSuccess } from './common/http.js';
 import { requirePermission } from './common/authorization.js';
 import { createAuditService } from './modules/audit/auditService.js';
@@ -16,6 +25,7 @@ import { createRosterImportRouter } from './modules/imports/rosterImportRoutes.j
 import { createMemoryStore } from './modules/platform/memoryStore.js';
 import { createSchoolRouter } from './modules/schools/schoolRoutes.js';
 import { createStudentRouter } from './modules/students/studentRoutes.js';
+import { createSystemRouter } from './modules/system/systemRoutes.js';
 import { createAccessRouter } from './modules/users/accessRoutes.js';
 import { createTenantRouter } from './modules/tenants/tenantRoutes.js';
 import { createWorkflowRouter } from './modules/workflows/workflowRoutes.js';
@@ -32,6 +42,9 @@ export function createApp(overrides = {}) {
 
   app.disable('x-powered-by');
   app.use(requestContext);
+  app.use(securityHeaders);
+  app.use(metrics);
+  app.use(rateLimit(config));
   app.use(cors(config));
   app.use(express.json({ limit: '1mb' }));
 
@@ -51,6 +64,10 @@ export function createApp(overrides = {}) {
     });
   });
 
+  app.get('/metrics', (request, response) => {
+    sendSuccess(response, getMetricsSnapshot());
+  });
+
   app.use('/api/v1/auth', createAuthRouter({ authService, requireAuth }));
   app.use('/api/v1/tenants', createTenantRouter({ store, requireAuth }));
   app.use('/api/v1/schools', createSchoolRouter({ store, requireAuth, requireManageRoster }));
@@ -59,6 +76,7 @@ export function createApp(overrides = {}) {
   app.use('/api/v1/students/imports', createRosterImportRouter({ store, requireAuth, requireManageRoster }));
   app.use('/api/v1/students', createStudentRouter({ store, requireAuth, requireManageRoster }));
   app.use('/api/v1/enrollments', createEnrollmentRouter({ store, requireAuth, requireManageRoster }));
+  app.use('/api/v1/system', createSystemRouter({ config, requireAuth }));
   app.use('/api/v1', createWorkflowRouter({ store, requireAuth }));
   app.use('/api/v1', createAccessRouter({ store, requireAuth }));
 

@@ -26,6 +26,45 @@ function checksum(payload) {
   return createHash('sha256').update(JSON.stringify(payload)).digest('hex').slice(0, 16);
 }
 
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
+function renderQrSvg(payload) {
+  const encoded = JSON.stringify(payload);
+  const digest = createHash('sha256').update(encoded).digest('hex');
+  const cells = Array.from({ length: 144 }, (_, index) => {
+    const charCode = digest.charCodeAt(index % digest.length);
+    const isDark = (charCode + index + Math.floor(index / 12)) % 3 === 0;
+    const x = index % 12;
+    const y = Math.floor(index / 12);
+    return isDark ? `<rect x="${x}" y="${y}" width="1" height="1" />` : '';
+  }).join('');
+  const label = escapeHtml(payload.paperPageId);
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 12 14" role="img" aria-label="SmartFLN QR ${label}">
+  <rect width="12" height="14" fill="#fff"/>
+  <g fill="#111827">${cells}</g>
+  <text x="0.2" y="13.4" font-size="0.7" fill="#111827">${label.slice(0, 16)}</text>
+</svg>`;
+}
+
+function renderQuestion(question, index) {
+  const options = (question.options ?? [])
+    .map((option) => `<span class="option">${escapeHtml(option)}</span>`)
+    .join('');
+  return `<section class="question">
+    <h2>Q${index + 1}. ${escapeHtml(question.prompt)}</h2>
+    ${options ? `<div class="options">${options}</div>` : ''}
+    <div class="answer-box"></div>
+  </section>`;
+}
+
 function confidenceBand(score) {
   if (score >= 0.85) return 'high';
   if (score >= 0.65) return 'medium';
@@ -532,12 +571,77 @@ export function createWorkflowService(store) {
           }))
       };
     },
+    async getPrintablePaperBatch({ tenantId, paperBatchId }) {
+      const batch = await this.getPaperBatch({ tenantId, paperBatchId });
+      const assessment = ensureAssessment(tenantId, batch.assessmentId);
+      const items = assessmentQuestions(tenantId, batch.assessmentId);
+      const students = await store.listStudents({
+        tenantId,
+        classSectionId: batch.classSectionId,
+        status: 'active'
+      });
+      const studentById = new Map(students.map((student) => [student.id, student]));
+      const pages = batch.paperInstances
+        .map((instance) => {
+          const student = studentById.get(instance.studentId);
+          const page = instance.pages[0];
+          return `<article class="paper">
+            <header>
+              <div>
+                <p class="eyebrow">SmartFLN Paper</p>
+                <h1>${escapeHtml(assessment.title)}</h1>
+                <p>${escapeHtml(student?.displayName ?? instance.studentId)} · Page ${page.pageNumber}</p>
+              </div>
+              <div class="qr">${renderQrSvg(page.qrPayload)}</div>
+            </header>
+            ${items.map(renderQuestion).join('')}
+          </article>`;
+        })
+        .join('');
+
+      return {
+        paperBatchId: batch.id,
+        fileName: `${assessment.title.replaceAll(' ', '_')}_papers.html`,
+        contentType: 'text/html',
+        content: `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>${escapeHtml(assessment.title)} Papers</title>
+  <style>
+    body { margin: 0; color: #111827; font-family: Arial, sans-serif; }
+    .paper { width: 210mm; min-height: 297mm; padding: 18mm; page-break-after: always; }
+    header { display: flex; justify-content: space-between; gap: 16px; border-bottom: 2px solid #111827; padding-bottom: 12px; }
+    .eyebrow { margin: 0 0 4px; font-size: 11px; font-weight: 700; text-transform: uppercase; }
+    h1 { margin: 0 0 8px; font-size: 22px; }
+    h2 { margin: 0 0 10px; font-size: 15px; }
+    .qr svg { width: 34mm; height: 39mm; }
+    .question { margin-top: 18px; }
+    .options { display: flex; gap: 10px; margin-bottom: 10px; }
+    .option { min-width: 36px; border: 1px solid #111827; border-radius: 999px; padding: 6px 10px; text-align: center; }
+    .answer-box { min-height: 34mm; border: 1.5px solid #111827; border-radius: 4px; }
+    @media print { .paper { page-break-after: always; } }
+  </style>
+</head>
+<body>${pages}</body>
+</html>`
+      };
+    },
     async getPaperPageQr({ tenantId, paperPageId }) {
       const page = paperPages.get(paperPageId);
       if (!page || page.tenantId !== tenantId) {
         throw new ApiError(404, 'PAPER_PAGE_NOT_FOUND', 'Paper page was not found.');
       }
       return clone(page.qrPayload);
+    },
+    async getPaperPageQrSvg({ tenantId, paperPageId }) {
+      const payload = await this.getPaperPageQr({ tenantId, paperPageId });
+      return {
+        paperPageId,
+        fileName: `${paperPageId}.svg`,
+        contentType: 'image/svg+xml',
+        content: renderQrSvg(payload)
+      };
     },
     async createScanBatch({ tenantId, createdByUserId, body }) {
       const assessment = ensureAssessment(tenantId, body.assessmentId);
@@ -726,6 +830,14 @@ export function createWorkflowService(store) {
         throw new ApiError(404, 'EXPORT_NOT_FOUND', 'Export job was not found.');
       }
       return clone(job);
+    },
+    async getExportDownload({ tenantId, exportJobId }) {
+      const job = await this.getExport({ tenantId, exportJobId });
+      return {
+        fileName: job.fileName,
+        contentType: job.contentType,
+        content: job.content
+      };
     }
   };
 }

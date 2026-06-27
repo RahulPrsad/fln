@@ -34,6 +34,14 @@ paths:
     get:
       summary: Get page QR identity payload
       tags: [Papers]
+  /api/v1/paper-pages/{paperPageId}/qr.svg:
+    get:
+      summary: Download QR SVG artifact
+      tags: [Papers]
+  /api/v1/paper-batches/{paperBatchId}/print:
+    get:
+      summary: Download printable paper packet HTML
+      tags: [Papers]
   /api/v1/scan-batches:
     get:
       summary: List scan batches
@@ -77,6 +85,14 @@ paths:
     get:
       summary: Get export job and content
       tags: [Exports]
+  /api/v1/exports/{exportJobId}/download:
+    get:
+      summary: Download export artifact
+      tags: [Exports]
+  /api/v1/system/requirements:
+    get:
+      summary: Get production configuration requirements
+      tags: [System]
 components:
   securitySchemes:
     bearerAuth:

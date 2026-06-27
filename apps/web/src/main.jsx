@@ -30,6 +30,26 @@ async function api(path, { token, method = 'GET', body = null } = {}) {
   return payload.data;
 }
 
+async function downloadArtifact(path, token) {
+  const response = await fetch(`${apiBaseUrl}${path}`, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  if (!response.ok) {
+    throw new Error('Download failed.');
+  }
+  const blob = await response.blob();
+  const disposition = response.headers.get('content-disposition') ?? '';
+  const fileName = disposition.match(/filename="([^"]+)"/)?.[1] ?? 'smartfln-artifact';
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
 function canManage(user) {
   return user?.permissions?.some((permission) => ['school:manage', 'roster:manage', 'assessment:manage'].includes(permission));
 }
@@ -356,12 +376,12 @@ function Workspace({ session, onLogout }) {
       ) : null}
       {activeTab === 'Roster' ? <Roster state={state} /> : null}
       {activeTab === 'Assessments' ? <Assessments state={state} setState={setState} onAssess={createAssessmentFlow} /> : null}
-      {activeTab === 'Papers' ? <Papers state={state} onPapers={generatePapers} /> : null}
+      {activeTab === 'Papers' ? <Papers state={state} token={token} onPapers={generatePapers} setNotice={setNotice} /> : null}
       {activeTab === 'Scanner' ? <Scanner state={state} onScan={processScan} /> : null}
       {activeTab === 'Review' ? <Review state={state} onResolve={resolveReview} /> : null}
       {activeTab === 'Results' ? <Results state={state} onFinalize={finalizeResults} /> : null}
       {activeTab === 'Analytics' ? <Analytics analytics={state.analytics} /> : null}
-      {activeTab === 'Exports' ? <Exports state={state} onExport={createExport} /> : null}
+      {activeTab === 'Exports' ? <Exports state={state} token={token} onExport={createExport} setNotice={setNotice} /> : null}
     </main>
   );
 }
@@ -430,12 +450,25 @@ function Assessments({ state, setState, onAssess }) {
   );
 }
 
-function Papers({ state, onPapers }) {
+function Papers({ state, token, onPapers, setNotice }) {
   const firstPage = state.paperBatch?.paperInstances?.[0]?.pages?.[0];
   return (
     <section className="content-grid">
       <Panel title="Paper Batch">
         <button onClick={onPapers}>Generate Student Papers</button>
+        {state.paperBatch ? (
+          <button
+            className="secondary"
+            onClick={() =>
+              downloadArtifact(`/api/v1/paper-batches/${state.paperBatch.id}/print`, token).catch((error) =>
+                setNotice(error.message)
+              )
+            }
+            type="button"
+          >
+            Download Printable Packet
+          </button>
+        ) : null}
         <Metric label="Papers" value={state.paperBatch?.paperInstances?.length ?? 0} />
       </Panel>
       <Panel title="QR Identity">
@@ -447,6 +480,17 @@ function Papers({ state, onPapers }) {
               ))}
             </div>
             <code>{firstPage.qrPayload.paperPageId}</code>
+            <button
+              className="secondary"
+              onClick={() =>
+                downloadArtifact(`/api/v1/paper-pages/${firstPage.id}/qr.svg`, token).catch((error) =>
+                  setNotice(error.message)
+                )
+              }
+              type="button"
+            >
+              Download QR SVG
+            </button>
           </div>
         ) : (
           <p className="muted">No generated paper selected.</p>
@@ -524,7 +568,7 @@ function Analytics({ analytics }) {
   );
 }
 
-function Exports({ state, onExport }) {
+function Exports({ state, token, onExport, setNotice }) {
   return (
     <section className="content-grid">
       <Panel title="Export Center">
@@ -533,6 +577,17 @@ function Exports({ state, onExport }) {
           <div className="export-box">
             <strong>{state.exportJob.fileName}</strong>
             <span>{state.exportJob.status}</span>
+            <button
+              className="secondary"
+              onClick={() =>
+                downloadArtifact(`/api/v1/exports/${state.exportJob.id}/download`, token).catch((error) =>
+                  setNotice(error.message)
+                )
+              }
+              type="button"
+            >
+              Download CSV
+            </button>
             <pre>{state.exportJob.content}</pre>
           </div>
         ) : (

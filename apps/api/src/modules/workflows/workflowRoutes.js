@@ -139,6 +139,22 @@ export function createWorkflowRouter({ store, requireAuth }) {
   );
 
   router.get(
+    '/paper-batches/:paperBatchId/print',
+    requireExport,
+    asyncHandler(async (request, response) => {
+      const artifact = await workflows.getPrintablePaperBatch({
+        tenantId: request.auth.user.tenantId,
+        paperBatchId: request.params.paperBatchId
+      });
+      response
+        .status(200)
+        .type(artifact.contentType)
+        .setHeader('Content-Disposition', `inline; filename="${artifact.fileName}"`)
+        .send(artifact.content);
+    })
+  );
+
+  router.get(
     '/paper-pages/:paperPageId/qr',
     asyncHandler(async (request, response) => {
       sendSuccess(
@@ -148,6 +164,21 @@ export function createWorkflowRouter({ store, requireAuth }) {
           paperPageId: request.params.paperPageId
         })
       );
+    })
+  );
+
+  router.get(
+    '/paper-pages/:paperPageId/qr.svg',
+    asyncHandler(async (request, response) => {
+      const artifact = await workflows.getPaperPageQrSvg({
+        tenantId: request.auth.user.tenantId,
+        paperPageId: request.params.paperPageId
+      });
+      response
+        .status(200)
+        .type(artifact.contentType)
+        .setHeader('Content-Disposition', `inline; filename="${artifact.fileName}"`)
+        .send(artifact.content);
     })
   );
 
@@ -312,6 +343,22 @@ export function createWorkflowRouter({ store, requireAuth }) {
           exportJobId: request.params.exportJobId
         })
       );
+    })
+  );
+
+  router.get(
+    '/exports/:exportJobId/download',
+    requireExport,
+    asyncHandler(async (request, response) => {
+      const artifact = await workflows.getExportDownload({
+        tenantId: request.auth.user.tenantId,
+        exportJobId: request.params.exportJobId
+      });
+      response
+        .status(200)
+        .type(artifact.contentType)
+        .setHeader('Content-Disposition', `attachment; filename="${artifact.fileName}"`)
+        .send(artifact.content);
     })
   );
 

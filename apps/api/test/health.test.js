@@ -58,6 +58,18 @@ test('GET /version returns service version metadata', async () => {
   });
 });
 
+test('GET /metrics returns request counters and security headers are set', async () => {
+  await withTestServer(async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/metrics`);
+    const body = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('x-content-type-options'), 'nosniff');
+    assert.equal(response.headers.get('x-frame-options'), 'DENY');
+    assert.equal(typeof body.data.totalRequests, 'number');
+  });
+});
+
 test('unknown routes use the standard error envelope', async () => {
   await withTestServer(async (baseUrl) => {
     const response = await fetch(`${baseUrl}/unknown`);

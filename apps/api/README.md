@@ -53,6 +53,8 @@ Integrated workflow endpoints:
 - `POST /api/v1/paper-batches`
 - `GET /api/v1/paper-batches/:paperBatchId`
 - `GET /api/v1/paper-pages/:paperPageId/qr`
+- `GET /api/v1/paper-pages/:paperPageId/qr.svg`
+- `GET /api/v1/paper-batches/:paperBatchId/print`
 - `POST /api/v1/scan-batches`
 - `POST /api/v1/scan-batches/:scanBatchId/pages`
 - `GET /api/v1/answer-crops`
@@ -63,6 +65,8 @@ Integrated workflow endpoints:
 - `GET /api/v1/analytics/assessments/:assessmentId/summary`
 - `POST /api/v1/exports`
 - `GET /api/v1/exports/:exportJobId`
+- `GET /api/v1/exports/:exportJobId/download`
+- `GET /api/v1/system/requirements`
 
 Demo credentials:
 

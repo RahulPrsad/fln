@@ -135,6 +135,20 @@ test('complete paper assessment workflow from authoring to export', async () => 
     assert.equal(qr.response.status, 200);
     assert.equal(qr.body.data.paperPageId, firstPaperPage.id);
 
+    const qrSvg = await fetch(`${baseUrl}/api/v1/paper-pages/${firstPaperPage.id}/qr.svg`, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    assert.equal(qrSvg.status, 200);
+    assert.equal(qrSvg.headers.get('content-type').includes('image/svg+xml'), true);
+    assert.equal((await qrSvg.text()).includes('<svg'), true);
+
+    const printable = await fetch(`${baseUrl}/api/v1/paper-batches/${paperBatch.body.data.id}/print`, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    assert.equal(printable.status, 200);
+    assert.equal(printable.headers.get('content-type').includes('text/html'), true);
+    assert.equal((await printable.text()).includes('SmartFLN Paper'), true);
+
     const scanBatch = await requestJson(`${baseUrl}/api/v1/scan-batches`, {
       method: 'POST',
       token,
@@ -202,6 +216,17 @@ test('complete paper assessment workflow from authoring to export', async () => 
     assert.equal(exportJob.response.status, 201);
     assert.equal(exportJob.body.data.status, 'ready');
     assert.equal(exportJob.body.data.content.includes('studentId,awardedMarks,totalMarks'), true);
+
+    const download = await fetch(`${baseUrl}/api/v1/exports/${exportJob.body.data.id}/download`, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    assert.equal(download.status, 200);
+    assert.equal(download.headers.get('content-disposition').includes('attachment'), true);
+    assert.equal((await download.text()).includes('studentId,awardedMarks,totalMarks'), true);
+
+    const requirements = await requestJson(`${baseUrl}/api/v1/system/requirements`, { token });
+    assert.equal(requirements.response.status, 200);
+    assert.equal(requirements.body.data.requiredForProduction.some((item) => item.key === 'SMARTFLN_MONGO_URI'), true);
   });
 });
 

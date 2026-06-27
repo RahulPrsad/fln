@@ -1,6 +1,77 @@
 import { randomUUID } from 'node:crypto';
 import { ApiError } from './http.js';
 
+const metricsState = {
+  startedAt: Date.now(),
+  totalRequests: 0,
+  statusCounts: new Map(),
+  routeCounts: new Map()
+};
+
+export function getMetricsSnapshot() {
+  return {
+    uptimeSeconds: Math.floor((Date.now() - metricsState.startedAt) / 1000),
+    totalRequests: metricsState.totalRequests,
+    statusCounts: Object.fromEntries(metricsState.statusCounts),
+    routeCounts: Object.fromEntries(metricsState.routeCounts)
+  };
+}
+
+export function securityHeaders(request, response, next) {
+  response.setHeader('X-Content-Type-Options', 'nosniff');
+  response.setHeader('X-Frame-Options', 'DENY');
+  response.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  response.setHeader('Permissions-Policy', 'camera=(self), microphone=(), geolocation=()');
+  response.setHeader('Cross-Origin-Resource-Policy', 'same-site');
+  if (request.secure || request.header('X-Forwarded-Proto') === 'https') {
+    response.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  }
+  next();
+}
+
+export function rateLimit(config) {
+  const buckets = new Map();
+
+  return function rateLimitMiddleware(request, response, next) {
+    if (request.path === '/health/live' || request.path === '/health/ready') {
+      next();
+      return;
+    }
+
+    const key = `${request.ip}:${request.auth?.user?.id ?? 'anonymous'}`;
+    const current = buckets.get(key);
+    const nowMs = Date.now();
+    const windowMs = config.rateLimitWindowMs;
+    if (!current || nowMs > current.resetAt) {
+      buckets.set(key, { count: 1, resetAt: nowMs + windowMs });
+      next();
+      return;
+    }
+
+    current.count += 1;
+    response.setHeader('X-RateLimit-Limit', String(config.rateLimitMax));
+    response.setHeader('X-RateLimit-Remaining', String(Math.max(0, config.rateLimitMax - current.count)));
+    response.setHeader('X-RateLimit-Reset', String(Math.ceil(current.resetAt / 1000)));
+    if (current.count > config.rateLimitMax) {
+      next(new ApiError(429, 'RATE_LIMITED', 'Too many requests. Please retry later.'));
+      return;
+    }
+
+    next();
+  };
+}
+
+export function metrics(request, response, next) {
+  response.on('finish', () => {
+    metricsState.totalRequests += 1;
+    const statusKey = String(response.statusCode);
+    const routeKey = `${request.method} ${request.route?.path ?? request.path}`;
+    metricsState.statusCounts.set(statusKey, (metricsState.statusCounts.get(statusKey) ?? 0) + 1);
+    metricsState.routeCounts.set(routeKey, (metricsState.routeCounts.get(routeKey) ?? 0) + 1);
+  });
+  next();
+}
+
 export function cors(config) {
   const allowedOrigins = new Set(config.corsOrigins ?? []);
 
