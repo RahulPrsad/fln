@@ -32,6 +32,7 @@ export async function ensureMongoIndexes(database) {
     database.collection('reviewTasks').createIndex({ tenantId: 1, status: 1, priority: 1 }),
     database.collection('studentResults').createIndex({ tenantId: 1, assessmentId: 1, studentId: 1 }, { unique: true }),
     database.collection('exportJobs').createIndex({ tenantId: 1, createdAt: -1 }),
-    database.collection('exportJobs').createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 })
+    database.collection('exportJobs').createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
+    database.collection('appState').createIndex({ type: 1, updatedAt: -1 })
   ]);
 }

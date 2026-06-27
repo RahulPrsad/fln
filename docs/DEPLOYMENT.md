@@ -100,9 +100,14 @@ The bucket will store:
 - generated printable paper artifacts
 - generated report/export artifacts
 
-## Current Deployment Warning
+## MVP Persistence Model
 
-The deployment profile is configured, but the runtime repository implementation is still in-memory. Before production/pilot data entry, connect store methods to MongoDB Atlas collections or data will not survive API restarts.
+When `SMARTFLN_STORE_PROVIDER=mongo`, the API stores platform data and workflow data in MongoDB Atlas through versioned application-state documents. This MVP persistence layer covers:
+
+- tenants, schools, academic years, classes, students, enrollments, users, roles, sessions, and audit events
+- concepts, assessments, templates, paper batches, QR paper pages, scan batches, answer crops, review tasks, results, and export jobs
+
+This keeps the teacher web workflow restart-safe for pilots. A later scale milestone should split these snapshots into fully normalized MongoDB collections for high-volume reporting and cross-school analytics.
 
 ## Pilot Data Needed
 

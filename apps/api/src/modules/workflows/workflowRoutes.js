@@ -8,9 +8,21 @@ function canAuthor(auth) {
   return hasPermission(auth, 'assessment:manage', 'school:manage');
 }
 
+function canGeneratePaperBatch(auth) {
+  return canAuthor(auth) || hasPermission(auth, 'scan:create');
+}
+
 function requireAuthor(request, response, next) {
   if (!canAuthor(request.auth)) {
     next(new ApiError(403, 'FORBIDDEN', 'Assessment management permission is required.'));
+    return;
+  }
+  next();
+}
+
+function requirePaperGeneration(request, response, next) {
+  if (!canGeneratePaperBatch(request.auth)) {
+    next(new ApiError(403, 'FORBIDDEN', 'Paper generation or scan permission is required.'));
     return;
   }
   next();
@@ -111,7 +123,7 @@ export function createWorkflowRouter({ store, requireAuth }) {
 
   router.post(
     '/paper-batches',
-    requireAuthor,
+    requirePaperGeneration,
     asyncHandler(async (request, response) => {
       requiredString(request.body.assessmentId, 'assessmentId');
       sendCreated(

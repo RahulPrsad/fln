@@ -12,7 +12,8 @@ const accounts = {
   Admin: { email: 'admin@smartfln.local', password: 'SmartFLN@123' }
 };
 
-const tabs = ['Dashboard', 'Roster', 'Assessments', 'Papers', 'Scanner', 'Review', 'Results', 'Analytics', 'Exports'];
+const adminTabs = ['Dashboard', 'Roster', 'Assessments', 'Papers', 'Scanner', 'Review', 'Results', 'Analytics', 'Exports'];
+const teacherTabs = ['Dashboard', 'Assessments', 'Scanner', 'Review', 'Results', 'Analytics', 'Exports'];
 
 async function api(path, { token, method = 'GET', body = null } = {}) {
   const response = await fetch(`${apiBaseUrl}${path}`, {
@@ -149,6 +150,14 @@ function Workspace({ session, onLogout }) {
   const [notice, setNotice] = useState('');
   const token = session.accessToken;
   const selectedAssessment = state.assessments.find((assessment) => assessment.id === state.selectedAssessmentId);
+  const isManager = canManage(session.user);
+  const visibleTabs = useMemo(() => (isManager ? adminTabs : teacherTabs), [isManager]);
+
+  useEffect(() => {
+    if (!visibleTabs.includes(activeTab)) {
+      setActiveTab('Dashboard');
+    }
+  }, [activeTab, visibleTabs]);
 
   async function loadAll(preferredAssessmentId = state.selectedAssessmentId) {
     const [schools, years, classes, students, concepts, assessments, reviewTasks] = await Promise.all([
@@ -362,7 +371,7 @@ function Workspace({ session, onLogout }) {
       </header>
 
       <nav className="tabs" aria-label="Workspace">
-        {tabs.map((tab) => (
+        {visibleTabs.map((tab) => (
           <button className={activeTab === tab ? 'tab-active' : ''} key={tab} onClick={() => setActiveTab(tab)} type="button">
             {tab}
           </button>
@@ -375,7 +384,7 @@ function Workspace({ session, onLogout }) {
         <Dashboard state={state} onAssess={createAssessmentFlow} onPapers={generatePapers} onScan={processScan} onReview={resolveReview} onFinalize={finalizeResults} onExport={createExport} user={session.user} />
       ) : null}
       {activeTab === 'Roster' ? <Roster state={state} /> : null}
-      {activeTab === 'Assessments' ? <Assessments state={state} setState={setState} onAssess={createAssessmentFlow} /> : null}
+      {activeTab === 'Assessments' ? <Assessments state={state} setState={setState} onAssess={createAssessmentFlow} user={session.user} /> : null}
       {activeTab === 'Papers' ? <Papers state={state} token={token} onPapers={generatePapers} setNotice={setNotice} /> : null}
       {activeTab === 'Scanner' ? <Scanner state={state} onScan={processScan} /> : null}
       {activeTab === 'Review' ? <Review state={state} onResolve={resolveReview} /> : null}
@@ -427,7 +436,7 @@ function Roster({ state }) {
   );
 }
 
-function Assessments({ state, setState, onAssess }) {
+function Assessments({ state, setState, onAssess, user }) {
   return (
     <section className="content-grid">
       <Panel title="Assessments">
@@ -439,7 +448,11 @@ function Assessments({ state, setState, onAssess }) {
               </option>
             ))}
           </select>
-          <button onClick={onAssess}>Create Published FLN Assessment</button>
+          {canManage(user) ? (
+            <button onClick={onAssess}>Create Published FLN Assessment</button>
+          ) : (
+            <p className="muted">Assigned FLN assessments are ready for scanning, review, results, and exports.</p>
+          )}
         </div>
         <Table columns={['Title', 'Subject', 'Status', 'Questions']} rows={state.assessments.map((assessment) => [assessment.title, assessment.subject, assessment.status, assessment.questionCount])} />
       </Panel>

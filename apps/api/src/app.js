@@ -11,7 +11,7 @@ import {
   requestContext,
   securityHeaders
 } from './common/middleware.js';
-import { sendSuccess } from './common/http.js';
+import { asyncHandler, sendSuccess } from './common/http.js';
 import { requirePermission } from './common/authorization.js';
 import { createAuditService } from './modules/audit/auditService.js';
 import { createAcademicYearRouter } from './modules/academic-years/academicYearRoutes.js';
@@ -22,7 +22,7 @@ import { createTokenService } from './modules/auth/tokenService.js';
 import { createClassSectionRouter } from './modules/class-sections/classSectionRoutes.js';
 import { createEnrollmentRouter } from './modules/enrollments/enrollmentRoutes.js';
 import { createRosterImportRouter } from './modules/imports/rosterImportRoutes.js';
-import { createMemoryStore } from './modules/platform/memoryStore.js';
+import { createStore } from './modules/platform/storeFactory.js';
 import { createSchoolRouter } from './modules/schools/schoolRoutes.js';
 import { createStudentRouter } from './modules/students/studentRoutes.js';
 import { createSystemRouter } from './modules/system/systemRoutes.js';
@@ -32,7 +32,7 @@ import { createWorkflowRouter } from './modules/workflows/workflowRoutes.js';
 
 export function createApp(overrides = {}) {
   const config = { ...getRuntimeConfig(), ...overrides };
-  const store = overrides.store ?? createMemoryStore();
+  const store = overrides.store ?? createStore(config);
   const tokenService = createTokenService(config);
   const auditService = createAuditService(store);
   const authService = createAuthService({ store, tokenService, auditService, config });
@@ -52,15 +52,25 @@ export function createApp(overrides = {}) {
     sendSuccess(response, buildHealthPayload(config));
   });
 
-  app.get('/health/ready', (request, response) => {
-    sendSuccess(response, buildHealthPayload(config));
-  });
+  app.get(
+    '/health/ready',
+    asyncHandler(async (request, response) => {
+      const dependency = typeof store.healthCheck === 'function' ? await store.healthCheck() : null;
+      sendSuccess(response, {
+        ...buildHealthPayload(config),
+        dependencies: {
+          store: dependency
+        }
+      });
+    })
+  );
 
   app.get('/version', (request, response) => {
     sendSuccess(response, {
       service: config.serviceName,
       environment: config.environment,
-      version: config.version
+      version: config.version,
+      storeProvider: store.provider ?? config.storeProvider
     });
   });
 

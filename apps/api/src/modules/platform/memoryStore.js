@@ -54,10 +54,10 @@ export function createMemoryStore(seed = createSeedData()) {
   );
   const students = new Map((seed.students ?? []).map((student) => [student.id, student]));
   const enrollments = new Map((seed.enrollments ?? []).map((enrollment) => [enrollment.id, enrollment]));
-  const rosterImports = new Map();
-  const sessions = new Map();
-  const otpChallenges = new Map();
-  const auditEvents = [];
+  const rosterImports = new Map((seed.rosterImports ?? []).map((job) => [job.id, job]));
+  const sessions = new Map((seed.sessions ?? []).map((session) => [session.id, session]));
+  const otpChallenges = new Map((seed.otpChallenges ?? []).map((challenge) => [challenge.id, challenge]));
+  const auditEvents = seed.auditEvents ?? [];
 
   function getTenantResource(collection, id, tenantId, code = 'RESOURCE_NOT_FOUND') {
     const record = collection.get(id);
@@ -89,7 +89,30 @@ export function createMemoryStore(seed = createSeedData()) {
   }
 
   return {
+    provider: 'memory',
     demoPassword: seed.demoPassword,
+    exportState() {
+      return clone({
+        tenants: [...tenants.values()],
+        schools: [...schools.values()],
+        academicYears: [...academicYears.values()],
+        classSections: [...classSections.values()],
+        users: [...users.values()],
+        roles: [...roles.values()],
+        permissions: [...permissions.values()],
+        teacherAssignments: [...teacherAssignments.values()],
+        students: [...students.values()],
+        enrollments: [...enrollments.values()],
+        rosterImports: [...rosterImports.values()],
+        sessions: [...sessions.values()],
+        otpChallenges: [...otpChallenges.values()],
+        auditEvents,
+        demoPassword: seed.demoPassword
+      });
+    },
+    async healthCheck() {
+      return { provider: 'memory', status: 'ok' };
+    },
     async findUserByEmail(email) {
       const normalized = normalize(email).toLowerCase();
       const user = [...users.values()].find((item) => item.email.toLowerCase() === normalized);

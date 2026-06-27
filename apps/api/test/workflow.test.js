@@ -251,5 +251,66 @@ test('teacher can scan and review but cannot author assessments', async () => {
     const assessments = await requestJson(`${baseUrl}/api/v1/assessments`, { token });
     assert.equal(assessments.response.status, 200);
     assert.equal(assessments.body.data.some((item) => item.id === 'asm_demo_math_baseline'), true);
+
+    const assessmentId = 'asm_demo_math_baseline';
+    const assessmentDetail = await requestJson(`${baseUrl}/api/v1/assessments/${assessmentId}`, { token });
+    assert.equal(assessmentDetail.response.status, 200);
+
+    const paperBatch = await requestJson(`${baseUrl}/api/v1/paper-batches`, {
+      method: 'POST',
+      token,
+      body: {
+        assessmentId,
+        classSectionId: 'cls_demo_1a'
+      }
+    });
+    assert.equal(paperBatch.response.status, 201);
+    assert.equal(paperBatch.body.data.paperInstances.length, 2);
+
+    const scanBatch = await requestJson(`${baseUrl}/api/v1/scan-batches`, {
+      method: 'POST',
+      token,
+      body: {
+        assessmentId,
+        classSectionId: 'cls_demo_1a'
+      }
+    });
+    assert.equal(scanBatch.response.status, 201);
+
+    const answers = Object.fromEntries(
+      assessmentDetail.body.data.questions.map((question) => [question.id, question.answerKey])
+    );
+    const firstPaperPage = paperBatch.body.data.paperInstances[0].pages[0];
+    const scanPage = await requestJson(`${baseUrl}/api/v1/scan-batches/${scanBatch.body.data.id}/pages`, {
+      method: 'POST',
+      token,
+      body: {
+        qrPayload: firstPaperPage.qrPayload,
+        imageQuality: 0.78,
+        answers
+      }
+    });
+    assert.equal(scanPage.response.status, 201);
+    assert.equal(scanPage.body.data.status, 'processed');
+
+    const reviewTasks = await requestJson(`${baseUrl}/api/v1/review-tasks?status=pending`, { token });
+    assert.equal(reviewTasks.response.status, 200);
+    assert.equal(reviewTasks.body.data.length >= 1, true);
+
+    const reviewed = await requestJson(`${baseUrl}/api/v1/review-tasks/${reviewTasks.body.data[0].id}/decision`, {
+      method: 'POST',
+      token,
+      body: {
+        decision: 'accepted',
+        awardedMarks: reviewTasks.body.data[0].question.maxMarks,
+        finalAnswer: reviewTasks.body.data[0].crop.recognizedAnswer
+      }
+    });
+    assert.equal(reviewed.response.status, 200);
+    assert.equal(reviewed.body.data.task.status, 'resolved');
+
+    const results = await requestJson(`${baseUrl}/api/v1/assessments/${assessmentId}/results`, { token });
+    assert.equal(results.response.status, 200);
+    assert.equal(results.body.data.length, 1);
   });
 });

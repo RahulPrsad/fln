@@ -221,6 +221,80 @@ export function createWorkflowService(store) {
   const reviewTasks = new Map();
   const studentResults = new Map();
   const exportJobs = new Map();
+  let workflowLoaded = false;
+  let workflowLoadPromise = null;
+
+  function replaceMap(target, records = [], keySelector = (record) => record.id) {
+    target.clear();
+    for (const record of records) {
+      target.set(keySelector(record), record);
+    }
+  }
+
+  function snapshot() {
+    return clone({
+      concepts: [...concepts.values()],
+      assessments: [...assessments.values()],
+      questions: [...questions.values()],
+      templates: [...templates.values()],
+      paperBatches: [...paperBatches.values()],
+      paperInstances: [...paperInstances.values()],
+      paperPages: [...paperPages.values()],
+      scanBatches: [...scanBatches.values()],
+      scanPages: [...scanPages.values()],
+      answerCrops: [...answerCrops.values()],
+      reviewTasks: [...reviewTasks.values()],
+      studentResults: [...studentResults.values()],
+      exportJobs: [...exportJobs.values()]
+    });
+  }
+
+  function hydrate(persistedState) {
+    if (!persistedState) {
+      return;
+    }
+
+    replaceMap(concepts, persistedState.concepts ?? seed.concepts);
+    replaceMap(assessments, persistedState.assessments ?? seed.assessments);
+    replaceMap(questions, persistedState.questions ?? seed.questions);
+    replaceMap(templates, persistedState.templates ?? seed.templates);
+    replaceMap(paperBatches, persistedState.paperBatches);
+    replaceMap(paperInstances, persistedState.paperInstances);
+    replaceMap(paperPages, persistedState.paperPages);
+    replaceMap(scanBatches, persistedState.scanBatches);
+    replaceMap(answerCrops, persistedState.answerCrops);
+    replaceMap(reviewTasks, persistedState.reviewTasks);
+    replaceMap(studentResults, persistedState.studentResults, (record) =>
+      getResultKey(record.assessmentId, record.studentId)
+    );
+    replaceMap(exportJobs, persistedState.exportJobs);
+  }
+
+  async function ensureLoaded() {
+    if (workflowLoaded) {
+      return;
+    }
+
+    if (!workflowLoadPromise) {
+      workflowLoadPromise = (async () => {
+        if (typeof store.getWorkflowState === 'function') {
+          hydrate(await store.getWorkflowState());
+        }
+        workflowLoaded = true;
+      })().catch((error) => {
+        workflowLoadPromise = null;
+        throw error;
+      });
+    }
+
+    await workflowLoadPromise;
+  }
+
+  async function persistWorkflow() {
+    if (typeof store.saveWorkflowState === 'function') {
+      await store.saveWorkflowState(snapshot());
+    }
+  }
 
   function ensureAssessment(tenantId, assessmentId) {
     const assessment = assessments.get(assessmentId);
@@ -410,9 +484,11 @@ export function createWorkflowService(store) {
 
   return {
     async listConcepts({ tenantId }) {
+      await ensureLoaded();
       return [...concepts.values()].filter((concept) => concept.tenantId === tenantId).map(clone);
     },
     async listAssessments({ tenantId, classSectionId = null }) {
+      await ensureLoaded();
       return [...assessments.values()]
         .filter((assessment) => assessment.tenantId === tenantId)
         .filter((assessment) => !classSectionId || assessment.classSectionId === classSectionId)
@@ -423,6 +499,7 @@ export function createWorkflowService(store) {
         }));
     },
     async getAssessment({ tenantId, assessmentId }) {
+      await ensureLoaded();
       const assessment = ensureAssessment(tenantId, assessmentId);
       return {
         ...clone(assessment),
@@ -431,6 +508,7 @@ export function createWorkflowService(store) {
       };
     },
     async createAssessment({ tenantId, body }) {
+      await ensureLoaded();
       const assessment = {
         id: id('asm'),
         tenantId,
@@ -446,9 +524,11 @@ export function createWorkflowService(store) {
         updatedAt: now()
       };
       assessments.set(assessment.id, assessment);
+      await persistWorkflow();
       return clone(assessment);
     },
     async addQuestion({ tenantId, assessmentId, body }) {
+      await ensureLoaded();
       const assessment = ensureAssessment(tenantId, assessmentId);
       const existingQuestions = assessmentQuestions(tenantId, assessmentId);
       const question = {
@@ -467,9 +547,11 @@ export function createWorkflowService(store) {
       questions.set(question.id, question);
       assessment.totalMarks = existingQuestions.reduce((sum, item) => sum + item.maxMarks, 0) + question.maxMarks;
       assessment.updatedAt = now();
+      await persistWorkflow();
       return clone(question);
     },
     async publishAssessment({ tenantId, assessmentId }) {
+      await ensureLoaded();
       const assessment = ensureAssessment(tenantId, assessmentId);
       const items = assessmentQuestions(tenantId, assessmentId);
       if (items.length === 0) {
@@ -498,12 +580,15 @@ export function createWorkflowService(store) {
       assessment.status = 'published';
       assessment.publishedAt = now();
       assessment.updatedAt = now();
+      await persistWorkflow();
       return clone({ assessment, template });
     },
     async listPaperBatches({ tenantId }) {
+      await ensureLoaded();
       return [...paperBatches.values()].filter((batch) => batch.tenantId === tenantId).map(clone);
     },
     async generatePaperBatch({ tenantId, createdByUserId, body }) {
+      await ensureLoaded();
       const assessment = ensureAssessment(tenantId, body.assessmentId);
       const template = ensureTemplate(tenantId, assessment.id);
       const students = await store.listStudents({
@@ -554,9 +639,11 @@ export function createWorkflowService(store) {
         }
       }
 
+      await persistWorkflow();
       return this.getPaperBatch({ tenantId, paperBatchId: batch.id });
     },
     async getPaperBatch({ tenantId, paperBatchId }) {
+      await ensureLoaded();
       const batch = paperBatches.get(paperBatchId);
       if (!batch || batch.tenantId !== tenantId) {
         throw new ApiError(404, 'PAPER_BATCH_NOT_FOUND', 'Paper batch was not found.');
@@ -572,6 +659,7 @@ export function createWorkflowService(store) {
       };
     },
     async getPrintablePaperBatch({ tenantId, paperBatchId }) {
+      await ensureLoaded();
       const batch = await this.getPaperBatch({ tenantId, paperBatchId });
       const assessment = ensureAssessment(tenantId, batch.assessmentId);
       const items = assessmentQuestions(tenantId, batch.assessmentId);
@@ -628,6 +716,7 @@ export function createWorkflowService(store) {
       };
     },
     async getPaperPageQr({ tenantId, paperPageId }) {
+      await ensureLoaded();
       const page = paperPages.get(paperPageId);
       if (!page || page.tenantId !== tenantId) {
         throw new ApiError(404, 'PAPER_PAGE_NOT_FOUND', 'Paper page was not found.');
@@ -635,6 +724,7 @@ export function createWorkflowService(store) {
       return clone(page.qrPayload);
     },
     async getPaperPageQrSvg({ tenantId, paperPageId }) {
+      await ensureLoaded();
       const payload = await this.getPaperPageQr({ tenantId, paperPageId });
       return {
         paperPageId,
@@ -644,6 +734,7 @@ export function createWorkflowService(store) {
       };
     },
     async createScanBatch({ tenantId, createdByUserId, body }) {
+      await ensureLoaded();
       const assessment = ensureAssessment(tenantId, body.assessmentId);
       const batch = {
         id: id('sb'),
@@ -656,12 +747,15 @@ export function createWorkflowService(store) {
         updatedAt: now()
       };
       scanBatches.set(batch.id, batch);
+      await persistWorkflow();
       return clone(batch);
     },
     async listScanBatches({ tenantId }) {
+      await ensureLoaded();
       return [...scanBatches.values()].filter((batch) => batch.tenantId === tenantId).map(clone);
     },
     async getScanBatch({ tenantId, scanBatchId }) {
+      await ensureLoaded();
       const batch = scanBatches.get(scanBatchId);
       if (!batch || batch.tenantId !== tenantId) {
         throw new ApiError(404, 'SCAN_BATCH_NOT_FOUND', 'Scan batch was not found.');
@@ -672,6 +766,7 @@ export function createWorkflowService(store) {
       };
     },
     async uploadScanPage({ tenantId, scanBatchId, body }) {
+      await ensureLoaded();
       const batch = scanBatches.get(scanBatchId);
       if (!batch || batch.tenantId !== tenantId) {
         throw new ApiError(404, 'SCAN_BATCH_NOT_FOUND', 'Scan batch was not found.');
@@ -693,14 +788,17 @@ export function createWorkflowService(store) {
       });
       batch.status = 'processing_complete';
       batch.updatedAt = now();
+      await persistWorkflow();
       return clone(scanPage);
     },
     async listAnswerCrops({ tenantId, assessmentId }) {
+      await ensureLoaded();
       return [...answerCrops.values()]
         .filter((crop) => crop.tenantId === tenantId && (!assessmentId || crop.assessmentId === assessmentId))
         .map(clone);
     },
     async listReviewTasks({ tenantId, status = null }) {
+      await ensureLoaded();
       return [...reviewTasks.values()]
         .filter((task) => task.tenantId === tenantId && (!status || task.status === status))
         .map((task) => ({
@@ -710,6 +808,7 @@ export function createWorkflowService(store) {
         }));
     },
     async decideReviewTask({ tenantId, taskId, body, reviewerUserId }) {
+      await ensureLoaded();
       const task = reviewTasks.get(taskId);
       if (!task || task.tenantId !== tenantId) {
         throw new ApiError(404, 'REVIEW_TASK_NOT_FOUND', 'Review task was not found.');
@@ -728,15 +827,18 @@ export function createWorkflowService(store) {
       task.reviewedAt = now();
       task.updatedAt = now();
       await recomputeResult({ tenantId, assessmentId: task.assessmentId, studentId: task.studentId });
+      await persistWorkflow();
       return clone({ task, crop, question });
     },
     async listResults({ tenantId, assessmentId }) {
+      await ensureLoaded();
       ensureAssessment(tenantId, assessmentId);
       return [...studentResults.values()]
         .filter((result) => result.tenantId === tenantId && result.assessmentId === assessmentId)
         .map(clone);
     },
     async finalizeResults({ tenantId, assessmentId }) {
+      await ensureLoaded();
       ensureAssessment(tenantId, assessmentId);
       const results = [...studentResults.values()].filter(
         (result) => result.tenantId === tenantId && result.assessmentId === assessmentId
@@ -747,9 +849,11 @@ export function createWorkflowService(store) {
           result.finalizedAt = now();
         }
       }
+      await persistWorkflow();
       return results.map(clone);
     },
     async getAnalytics({ tenantId, assessmentId }) {
+      await ensureLoaded();
       const assessment = ensureAssessment(tenantId, assessmentId);
       const items = assessmentQuestions(tenantId, assessmentId);
       const crops = [...answerCrops.values()].filter(
@@ -796,6 +900,7 @@ export function createWorkflowService(store) {
       };
     },
     async createExport({ tenantId, requestedByUserId, body }) {
+      await ensureLoaded();
       const analytics = await this.getAnalytics({ tenantId, assessmentId: body.assessmentId });
       const results = await this.listResults({ tenantId, assessmentId: body.assessmentId });
       const lines = [
@@ -822,9 +927,11 @@ export function createWorkflowService(store) {
         analytics
       };
       exportJobs.set(job.id, job);
+      await persistWorkflow();
       return clone(job);
     },
     async getExport({ tenantId, exportJobId }) {
+      await ensureLoaded();
       const job = exportJobs.get(exportJobId);
       if (!job || job.tenantId !== tenantId) {
         throw new ApiError(404, 'EXPORT_NOT_FOUND', 'Export job was not found.');
@@ -832,6 +939,7 @@ export function createWorkflowService(store) {
       return clone(job);
     },
     async getExportDownload({ tenantId, exportJobId }) {
+      await ensureLoaded();
       const job = await this.getExport({ tenantId, exportJobId });
       return {
         fileName: job.fileName,
