@@ -2,8 +2,10 @@ FROM node:22-alpine
 
 WORKDIR /app
 
-COPY package.json ./
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/api ./apps/api
+
+RUN corepack enable && pnpm install --prod --frozen-lockfile
 
 ENV SMARTFLN_ENV=production
 ENV SMARTFLN_API_HOST=0.0.0.0

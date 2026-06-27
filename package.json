@@ -6,8 +6,10 @@
   "description": "SmartFLN - AI powered QR enabled assessment system",
   "scripts": {
     "start:api": "node apps/api/src/main.js",
-    "test": "node --test apps/api/test/health.test.js",
-    "verify": "node --test apps/api/test/health.test.js"
+    "build:web": "pnpm --filter @smartfln/web build",
+    "test": "node --test apps/api/test/*.test.js",
+    "verify": "node --test apps/api/test/*.test.js",
+    "dev:web": "pnpm --filter @smartfln/web dev"
   },
   "workspaces": [
     "apps/*",
@@ -16,5 +18,15 @@
   ],
   "engines": {
     "node": ">=22.0.0"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "^5.2.0",
+    "bcryptjs": "^3.0.3",
+    "express": "^5.2.1",
+    "jsonwebtoken": "^9.0.3",
+    "mongodb": "^7.3.0",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "vite": "^7.3.6"
   }
 }

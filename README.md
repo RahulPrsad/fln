@@ -434,22 +434,27 @@ The product direction is informed by known limitations and capabilities in the c
 
 ## Current Project Status
 
-Milestone 0 implementation has started.
+Milestone 1 is implemented on the `dev` branch.
 
 Current repository contents:
 
 - product, architecture, workflow, database, AI, API, UI/UX, and implementation planning documentation
-- dependency-light Node.js API foundation
+- MERN stack workspace using MongoDB driver, Express.js, React, and Node.js
 - health and version endpoints
-- API foundation tests using Node's built-in test runner
+- authentication APIs for login, OTP, refresh, logout, and current user
+- JWT access and refresh token handling
+- tenant, role, and permission seed primitives
+- MongoDB-ready repository boundary with in-memory development/test store
+- React web login shell for the web-only MVP
+- API tests using Node's built-in test runner
 - CI skeleton
 - Dockerfile for the API service
-- local development runbook and architecture decision record
+- local development runbook and architecture decision records
 
-Run the current foundation tests:
+Run the current API tests:
 
 ```bash
-node --test apps/api/test/health.test.js
+node --test apps/api/test/*.test.js
 ```
 
 Run the current API service:
@@ -457,3 +462,9 @@ Run the current API service:
 ```bash
 node apps/api/src/main.js
 ```
+
+Demo credentials:
+
+- teacher: `teacher@smartfln.local`
+- admin: `admin@smartfln.local`
+- password: `SmartFLN@123`

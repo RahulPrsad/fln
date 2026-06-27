@@ -153,20 +153,21 @@ Expected file areas:
 
 ## Milestone 1: Core Platform and Authentication
 
+Status: Implemented.
+
 ### Objectives
 
 - Build secure login and tenant-aware access foundation.
 - Support teacher and admin authentication.
 - Establish JWT, sessions, roles, and permissions.
-- Create base admin web shell and teacher app login shell.
+- Create base web login shell for teacher/admin MVP access.
 
 ### Deliverables
 
 - Auth APIs: login, OTP request/verify, refresh, logout, current user.
 - JWT access and refresh token handling.
 - Tenant, school, role, and permission primitives.
-- Admin web login screen.
-- Mobile login screen.
+- Web login screen.
 - Base API gateway middleware for auth, request id, tenant context.
 - Audit events for login and logout.
 
@@ -197,8 +198,8 @@ Expected file areas:
 
 ### Acceptance Criteria
 
-- Teacher can log in on mobile.
-- Admin can log in on web.
+- Teacher can log in through the web/API foundation.
+- Admin can log in through the web/API foundation.
 - Access token and refresh token work.
 - Expired access token can be refreshed.
 - Unauthorized requests are rejected.

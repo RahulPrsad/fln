@@ -8,6 +8,7 @@ Planned surfaces:
 
 - teacher dashboard
 - teacher paper scanner using browser camera APIs
+- teacher login
 - admin dashboard
 - school and roster management
 - assessment builder
@@ -17,3 +18,17 @@ Planned surfaces:
 - results
 - analytics
 - exports
+
+## Local Run
+
+Use the root workspace install, then run:
+
+```bash
+pnpm --filter @smartfln/web dev
+```
+
+By default the web app calls the API at `http://127.0.0.1:8080`. Override with:
+
+```bash
+VITE_SMARTFLN_API_BASE_URL=http://127.0.0.1:8080
+```
