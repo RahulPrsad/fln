@@ -43,6 +43,27 @@ Milestone 2 roster endpoints:
 - `POST /api/v1/students/imports`
 - `POST /api/v1/students/imports/:importId/commit`
 
+Integrated workflow endpoints:
+
+- `GET /api/v1/concepts`
+- `GET /api/v1/assessments`
+- `POST /api/v1/assessments`
+- `POST /api/v1/assessments/:assessmentId/questions`
+- `POST /api/v1/assessments/:assessmentId/publish`
+- `POST /api/v1/paper-batches`
+- `GET /api/v1/paper-batches/:paperBatchId`
+- `GET /api/v1/paper-pages/:paperPageId/qr`
+- `POST /api/v1/scan-batches`
+- `POST /api/v1/scan-batches/:scanBatchId/pages`
+- `GET /api/v1/answer-crops`
+- `GET /api/v1/review-tasks`
+- `POST /api/v1/review-tasks/:taskId/decision`
+- `GET /api/v1/assessments/:assessmentId/results`
+- `POST /api/v1/assessments/:assessmentId/finalize`
+- `GET /api/v1/analytics/assessments/:assessmentId/summary`
+- `POST /api/v1/exports`
+- `GET /api/v1/exports/:exportJobId`
+
 Demo credentials:
 
 - teacher: `teacher@smartfln.local`

@@ -18,6 +18,7 @@ import { createSchoolRouter } from './modules/schools/schoolRoutes.js';
 import { createStudentRouter } from './modules/students/studentRoutes.js';
 import { createAccessRouter } from './modules/users/accessRoutes.js';
 import { createTenantRouter } from './modules/tenants/tenantRoutes.js';
+import { createWorkflowRouter } from './modules/workflows/workflowRoutes.js';
 
 export function createApp(overrides = {}) {
   const config = { ...getRuntimeConfig(), ...overrides };
@@ -58,6 +59,7 @@ export function createApp(overrides = {}) {
   app.use('/api/v1/students/imports', createRosterImportRouter({ store, requireAuth, requireManageRoster }));
   app.use('/api/v1/students', createStudentRouter({ store, requireAuth, requireManageRoster }));
   app.use('/api/v1/enrollments', createEnrollmentRouter({ store, requireAuth, requireManageRoster }));
+  app.use('/api/v1', createWorkflowRouter({ store, requireAuth }));
   app.use('/api/v1', createAccessRouter({ store, requireAuth }));
 
   app.use(notFound);

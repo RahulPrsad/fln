@@ -73,6 +73,16 @@ CSV roster imports accept this header:
 displayName,externalStudentId,admissionNumber,rollNumber
 ```
 
+## Integrated Workflow Demo
+
+1. Start the API with `node apps/api/src/main.js`.
+2. Start the web app with `pnpm --filter @smartfln/web dev`.
+3. Sign in as `admin@smartfln.local`.
+4. Use the dashboard actions in order: create assessment, generate papers, process scan, resolve review, finalize, export.
+5. Sign in as `teacher@smartfln.local` to exercise teacher scan/review/read workflows.
+
+The current scan workflow accepts deterministic QR payloads and answer maps through the API. Real file upload, camera capture, QR image decode, and trained OCR/HTR workers are the next production integrations.
+
 ## Environment Variables
 
 Copy `.env.example` to `.env` when local overrides are needed.

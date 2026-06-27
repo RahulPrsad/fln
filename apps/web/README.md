@@ -15,6 +15,14 @@ Current MVP surfaces:
 - student setup
 - CSV roster import validation and commit
 - teacher assigned-class roster view
+- assessment authoring
+- QR paper identity view
+- scan processing workflow
+- answer crop inspection
+- teacher review queue
+- student results
+- concept analytics
+- CSV export center
 
 Planned surfaces:
 
@@ -29,6 +37,8 @@ Planned surfaces:
 - results
 - analytics
 - exports
+
+The current web app uses API-driven deterministic scan processing. Browser camera capture and real scanned image upload will be connected when file storage and CV workers are introduced.
 
 ## Local Run
 

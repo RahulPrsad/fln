@@ -434,7 +434,7 @@ The product direction is informed by known limitations and capabilities in the c
 
 ## Current Project Status
 
-Milestone 2 is implemented on the `dev` branch.
+The integrated SmartFLN web workflow is implemented on the `dev` branch.
 
 Current repository contents:
 
@@ -449,8 +449,12 @@ Current repository contents:
 - tenant-scoped school, academic year, class-section, student, enrollment, and teacher-assignment APIs
 - CSV/JSON roster import validation with row-level errors and duplicate warnings
 - roster import commit workflow
-- React web roster setup workspace for admins
-- React teacher class roster view for assigned classes
+- React web app covering login, roster, assessments, paper generation, scan processing, review, results, analytics, and exports
+- assessment authoring APIs with concepts, questions, answer keys, publishing, and templates
+- deterministic QR identity payloads for paper pages
+- scan batch and scan page APIs with deterministic image/OCR/evaluation pipeline simulation
+- teacher review task routing and decision APIs
+- result finalization, concept analytics, and CSV export jobs
 - API tests using Node's built-in test runner
 - CI skeleton
 - Dockerfile for the API service
@@ -480,3 +484,9 @@ Milestone 2 seed data:
 - school: `sch_demo`
 - academic year: `ay_demo_2026_2027`
 - class section: `cls_demo_1a`
+
+Current AI/CV note:
+
+- The app now implements the full SmartFLN workflow shape end to end.
+- Actual trained computer vision, QR image decoding, handwritten text recognition, and PDF rendering engines are represented by deterministic service boundaries and testable placeholder outputs.
+- Those boundaries are intentionally isolated so real model workers and QR/PDF libraries can replace the deterministic implementation without changing the user workflow.

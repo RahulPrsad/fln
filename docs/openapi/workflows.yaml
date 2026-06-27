@@ -1,0 +1,85 @@
+openapi: 3.1.0
+info:
+  title: SmartFLN Integrated Workflow API
+  version: 0.3.0
+  description: Assessment authoring, paper identity, scanning, review, analytics, and export workflow APIs.
+paths:
+  /api/v1/concepts:
+    get:
+      summary: List learning concepts
+      tags: [Concepts]
+  /api/v1/assessments:
+    get:
+      summary: List assessments
+      tags: [Assessments]
+    post:
+      summary: Create assessment
+      tags: [Assessments]
+  /api/v1/assessments/{assessmentId}/questions:
+    post:
+      summary: Add question
+      tags: [Assessments]
+  /api/v1/assessments/{assessmentId}/publish:
+    post:
+      summary: Publish assessment and template
+      tags: [Assessments]
+  /api/v1/paper-batches:
+    get:
+      summary: List paper batches
+      tags: [Papers]
+    post:
+      summary: Generate paper batch
+      tags: [Papers]
+  /api/v1/paper-pages/{paperPageId}/qr:
+    get:
+      summary: Get page QR identity payload
+      tags: [Papers]
+  /api/v1/scan-batches:
+    get:
+      summary: List scan batches
+      tags: [Scanning]
+    post:
+      summary: Create scan batch
+      tags: [Scanning]
+  /api/v1/scan-batches/{scanBatchId}/pages:
+    post:
+      summary: Upload/process scan page
+      tags: [Scanning]
+  /api/v1/answer-crops:
+    get:
+      summary: List answer crops
+      tags: [AI Processing]
+  /api/v1/review-tasks:
+    get:
+      summary: List teacher review tasks
+      tags: [Review]
+  /api/v1/review-tasks/{taskId}/decision:
+    post:
+      summary: Submit teacher review decision
+      tags: [Review]
+  /api/v1/assessments/{assessmentId}/results:
+    get:
+      summary: List assessment results
+      tags: [Results]
+  /api/v1/assessments/{assessmentId}/finalize:
+    post:
+      summary: Finalize ready results
+      tags: [Results]
+  /api/v1/analytics/assessments/{assessmentId}/summary:
+    get:
+      summary: Get assessment analytics summary
+      tags: [Analytics]
+  /api/v1/exports:
+    post:
+      summary: Create export job
+      tags: [Exports]
+  /api/v1/exports/{exportJobId}:
+    get:
+      summary: Get export job and content
+      tags: [Exports]
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
