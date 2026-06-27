@@ -41,6 +41,11 @@ button:disabled {
   color: #172033;
 }
 
+.danger {
+  background: #b83232;
+}
+
+input,
 select {
   width: 100%;
   border: 1px solid #bbc7d4;
@@ -185,6 +190,27 @@ code {
   gap: 8px;
 }
 
+.file-button {
+  min-height: 42px;
+  display: inline-grid;
+  place-items: center;
+  border: 1px solid #c8d1dc;
+  border-radius: 6px;
+  padding: 10px 14px;
+  background: #fff;
+  color: #172033;
+  font-weight: 750;
+  cursor: pointer;
+}
+
+.file-button input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
 .metric {
   min-height: 88px;
   display: grid;
@@ -220,6 +246,37 @@ code {
   font-weight: 700;
 }
 
+.camera-card {
+  gap: 12px;
+}
+
+.camera-view,
+.camera-placeholder {
+  width: 100%;
+  min-height: 260px;
+  max-height: 520px;
+  border: 1px solid #bbc7d4;
+  border-radius: 8px;
+  background: #0f172a;
+}
+
+.camera-view {
+  object-fit: contain;
+}
+
+.camera-placeholder {
+  display: grid;
+  place-items: center;
+  gap: 6px;
+  padding: 18px;
+  color: #e5edf7;
+  text-align: center;
+}
+
+.camera-placeholder span {
+  color: #bac7d6;
+}
+
 .final-box {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -228,6 +285,53 @@ code {
 
 .final-box .table-wrap {
   grid-column: 1 / -1;
+}
+
+.check-list {
+  display: grid;
+  gap: 12px;
+}
+
+.check-card {
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid #f0c88d;
+  border-radius: 8px;
+  background: #fff8ed;
+}
+
+.check-card > div:first-child {
+  display: grid;
+  gap: 4px;
+}
+
+.check-card > div:first-child span {
+  color: #8a5b1f;
+  font-weight: 750;
+}
+
+.check-card img {
+  width: 100%;
+  max-height: 220px;
+  object-fit: contain;
+  border: 1px solid #dfc8a3;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.review-facts {
+  display: grid;
+  grid-template-columns: minmax(110px, 0.6fr) minmax(0, 1fr);
+  gap: 8px 12px;
+  padding: 10px;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.review-facts span {
+  color: #586676;
+  font-weight: 750;
 }
 
 .table-wrap {
@@ -276,7 +380,8 @@ td {
   }
 
   .summary-grid,
-  .final-box {
+  .final-box,
+  .review-facts {
     grid-template-columns: 1fr;
   }
 }

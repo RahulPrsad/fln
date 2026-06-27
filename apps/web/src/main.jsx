@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import './styles.css';
 
@@ -80,6 +80,47 @@ function formatAnswer(value) {
   return String(value ?? '');
 }
 
+async function decodeQrFromImage(file) {
+  if (!('BarcodeDetector' in window)) {
+    throw new Error('QR detection is not available in this browser.');
+  }
+  const detector = new BarcodeDetector({ formats: ['qr_code'] });
+  const bitmap = await createImageBitmap(file);
+  const codes = await detector.detect(bitmap);
+  bitmap.close?.();
+  const qrText = codes[0]?.rawValue;
+  if (!qrText) {
+    throw new Error('QR not detected.');
+  }
+  return qrText;
+}
+
+async function cropAnswerRegions(file, answerRegions = [], questions = []) {
+  const bitmap = await createImageBitmap(file);
+  const questionById = new Map(questions.map((question) => [question.id, question]));
+  const crops = answerRegions.map((region, index) => {
+    const padding = 0.012;
+    const x = Math.max(0, Math.floor((region.x - padding) * bitmap.width));
+    const y = Math.max(0, Math.floor((region.y - padding) * bitmap.height));
+    const width = Math.min(bitmap.width - x, Math.ceil((region.width + padding * 2) * bitmap.width));
+    const height = Math.min(bitmap.height - y, Math.ceil((region.height + padding * 2) * bitmap.height));
+    const scale = Math.min(1, 1600 / width);
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(width * scale));
+    canvas.height = Math.max(1, Math.round(height * scale));
+    canvas.getContext('2d').drawImage(bitmap, x, y, width, height, 0, 0, canvas.width, canvas.height);
+    return {
+      id: region.id,
+      questionId: region.questionId,
+      label: `Q${index + 1}`,
+      prompt: questionById.get(region.questionId)?.prompt ?? region.questionId,
+      dataUrl: canvas.toDataURL('image/jpeg', 0.86)
+    };
+  });
+  bitmap.close?.();
+  return crops;
+}
+
 function App() {
   const [session, setSession] = useState(null);
   const [message, setMessage] = useState('');
@@ -92,7 +133,7 @@ function App() {
     try {
       const data = await api('/api/v1/auth/login', {
         method: 'POST',
-        body: { ...demoAccount, deviceId: 'web-demo-dashboard' }
+        body: { ...demoAccount, deviceId: 'web-camera-workflow' }
       });
       setSession(data);
     } catch (error) {
@@ -111,7 +152,7 @@ function App() {
       <section className="login-panel">
         <div>
           <p className="eyebrow">SmartFLN</p>
-          <h1>FLN Demo Dashboard</h1>
+          <h1>Camera Assessment Workflow</h1>
         </div>
         <form className="stack" onSubmit={login}>
           <button disabled={loading} type="submit">
@@ -135,6 +176,9 @@ function Workspace({ session, onLogout }) {
     selectedClassId: 'cls_demo_1a',
     paperBatch: null,
     scanBatch: null,
+    scanOutput: null,
+    roiCrops: [],
+    reviewTasks: [],
     results: [],
     crops: [],
     exportJob: null
@@ -151,10 +195,14 @@ function Workspace({ session, onLogout }) {
     const selectedAssessmentId = preferredAssessmentId || assessments[0]?.id || '';
     const selectedClassId = classes[0]?.id || 'cls_demo_1a';
     let assessmentDetail = null;
+    let reviewTasks = [];
     let results = [];
     let crops = [];
     if (selectedAssessmentId) {
       assessmentDetail = await api(`/api/v1/assessments/${selectedAssessmentId}`, { token }).catch(() => null);
+      reviewTasks = (await api('/api/v1/review-tasks?status=pending', { token }).catch(() => [])).filter(
+        (task) => task.assessmentId === selectedAssessmentId
+      );
       results = await api(`/api/v1/assessments/${selectedAssessmentId}/results`, { token }).catch(() => []);
       crops = await api(`/api/v1/answer-crops?assessmentId=${selectedAssessmentId}`, { token }).catch(() => []);
     }
@@ -166,6 +214,7 @@ function Workspace({ session, onLogout }) {
       assessmentDetail,
       selectedAssessmentId,
       selectedClassId,
+      reviewTasks,
       results,
       crops
     }));
@@ -205,7 +254,10 @@ function Workspace({ session, onLogout }) {
           paperMode: 'student_specific'
         }
       });
-      return { assessmentId: state.selectedAssessmentId, statePatch: { paperBatch, exportJob: null } };
+      return {
+        assessmentId: state.selectedAssessmentId,
+        statePatch: { paperBatch, scanBatch: null, scanOutput: null, roiCrops: [], exportJob: null }
+      };
     }, 'Question paper generated.');
   }
 
@@ -237,60 +289,93 @@ function Workspace({ session, onLogout }) {
     }
   }
 
-  async function generateReport() {
+  async function scanPaperPhoto(file) {
     return runAction(async () => {
-      let paperBatch = state.paperBatch;
-      if (!paperBatch) {
-        paperBatch = await api('/api/v1/paper-batches', {
-          method: 'POST',
-          token,
-          body: {
-            assessmentId: state.selectedAssessmentId,
-            classSectionId: selectedAssessment?.classSectionId ?? state.selectedClassId,
-            paperMode: 'student_specific'
-          }
-        });
+      if (!file) {
+        throw new Error('Capture a paper photo first.');
       }
 
-      const assessmentDetail = await api(`/api/v1/assessments/${state.selectedAssessmentId}`, { token });
-      const answers = Object.fromEntries(assessmentDetail.questions.map((question) => [question.id, question.answerKey]));
-      const page = paperBatch.paperInstances?.[0]?.pages?.[0];
-      if (!page?.qrText) {
-        throw new Error('Paper QR was not generated.');
+      let qrText;
+      try {
+        qrText = await decodeQrFromImage(file);
+      } catch {
+        qrText = state.paperBatch?.paperInstances?.[0]?.pages?.[0]?.qrText;
+        if (!qrText) {
+          throw new Error('QR was not readable. Retake the photo with the QR clearly visible.');
+        }
       }
 
+      const resolved = await api('/api/v1/paper-pages/resolve-qr', {
+        method: 'POST',
+        token,
+        body: { qrText }
+      });
+      const assessmentDetail = await api(`/api/v1/assessments/${resolved.assessment.id}`, { token });
+      const roiCrops = await cropAnswerRegions(
+        file,
+        assessmentDetail.template?.answerRegions ?? [],
+        assessmentDetail.questions ?? []
+      );
       const scanBatch = await api('/api/v1/scan-batches', {
         method: 'POST',
         token,
         body: {
-          assessmentId: state.selectedAssessmentId,
-          classSectionId: selectedAssessment?.classSectionId ?? state.selectedClassId
+          assessmentId: resolved.assessment.id,
+          classSectionId: resolved.assessment.classSectionId
         }
       });
-      await api(`/api/v1/scan-batches/${scanBatch.id}/pages`, {
+      const scanPage = await api(`/api/v1/scan-batches/${scanBatch.id}/pages`, {
         method: 'POST',
         token,
         body: {
-          qrText: page.qrText,
-          answers,
-          imageQuality: 0.96,
-          scanMode: 'demo_answer_key'
+          qrText,
+          ocrCrops: roiCrops.map((crop) => ({
+            questionId: crop.questionId,
+            cropUri: `browser://camera/${crop.id}`,
+            imageDataUrl: crop.dataUrl
+          })),
+          imageQuality: 0.82,
+          scanMode: 'camera_capture'
         }
       });
 
-      const hiddenReviewItems = await api('/api/v1/review-tasks?status=pending', { token }).catch(() => []);
-      for (const item of hiddenReviewItems.filter((entry) => entry.assessmentId === state.selectedAssessmentId)) {
-        await api(`/api/v1/review-tasks/${item.id}/decision`, {
-          method: 'POST',
-          token,
-          body: {
-            decision: 'accepted',
-            awardedMarks: item.question.maxMarks,
-            finalAnswer: item.crop.recognizedAnswer
-          }
-        });
-      }
+      return {
+        assessmentId: resolved.assessment.id,
+        statePatch: {
+          selectedAssessmentId: resolved.assessment.id,
+          selectedClassId: resolved.assessment.classSectionId,
+          scanBatch,
+          scanOutput: { resolved, scanPage },
+          roiCrops
+        }
+      };
+    }, 'OCR complete. Review confidence and result below.');
+  }
 
+  async function decideTeacherCheck(task, decision) {
+    return runAction(async () => {
+      const accepted = decision === 'accepted';
+      await api(`/api/v1/review-tasks/${task.id}/decision`, {
+        method: 'POST',
+        token,
+        body: {
+          decision,
+          awardedMarks: accepted ? task.question.maxMarks : 0,
+          finalAnswer: accepted ? task.crop.recognizedAnswer : ''
+        }
+      });
+      return { assessmentId: task.assessmentId };
+    }, 'Teacher check saved.');
+  }
+
+  async function generateReport() {
+    return runAction(async () => {
+      if (state.crops.length === 0 && state.results.length === 0) {
+        throw new Error('Run camera OCR before generating the report.');
+      }
+      if (state.reviewTasks.length > 0) {
+        throw new Error('Finish teacher checks before generating the report.');
+      }
       await api(`/api/v1/assessments/${state.selectedAssessmentId}/finalize`, {
         method: 'POST',
         token,
@@ -305,7 +390,7 @@ function Workspace({ session, onLogout }) {
           exportType: 'class_result_csv'
         }
       });
-      return { assessmentId: state.selectedAssessmentId, statePatch: { paperBatch, scanBatch, exportJob } };
+      return { assessmentId: state.selectedAssessmentId, statePatch: { exportJob } };
     }, 'Report generated.');
   }
 
@@ -327,7 +412,7 @@ function Workspace({ session, onLogout }) {
       <header className="topbar">
         <div>
           <p className="eyebrow">SmartFLN</p>
-          <h1>FLN Demo Dashboard</h1>
+          <h1>Camera Assessment Workflow</h1>
         </div>
         <div className="user-block">
           <span>{session.user.displayName}</span>
@@ -337,14 +422,16 @@ function Workspace({ session, onLogout }) {
         </div>
       </header>
 
-      {notice ? <p className={notice.includes('loading') || notice.includes('first') ? 'notice error' : 'notice'}>{notice}</p> : null}
+      {notice ? <p className={notice.includes('before') || notice.includes('Retake') ? 'notice error' : 'notice'}>{notice}</p> : null}
 
-      <DemoDashboard
+      <TeacherWorkflow
         state={state}
         setState={setState}
         onGenerate={generatePapers}
         onPrint={printFirstPaper}
         onDownloadPaper={downloadFirstPaper}
+        onScanPhoto={scanPaperPhoto}
+        onTeacherCheck={decideTeacherCheck}
         onGenerateReport={generateReport}
         onDownloadReport={downloadReport}
       />
@@ -352,12 +439,14 @@ function Workspace({ session, onLogout }) {
   );
 }
 
-function DemoDashboard({
+function TeacherWorkflow({
   state,
   setState,
   onGenerate,
   onPrint,
   onDownloadPaper,
+  onScanPhoto,
+  onTeacherCheck,
   onGenerateReport,
   onDownloadReport
 }) {
@@ -365,20 +454,28 @@ function DemoDashboard({
   const selectedPage = selectedPaper?.pages?.[0];
   const questions = state.assessmentDetail?.questions ?? [];
   const latestResult = state.results[0];
+  const averageConfidence =
+    state.crops.length > 0
+      ? Math.round(
+          (state.crops.reduce((sum, crop) => sum + Number(crop.recognitionConfidence ?? 0), 0) /
+            state.crops.length) *
+            100
+        )
+      : 0;
 
   return (
     <section className="demo-grid">
       <section className="summary-grid">
-        <Metric label="Students" value={state.students.length} />
         <Metric label="Papers" value={state.paperBatch?.paperInstances?.length ?? 0} />
+        <Metric label="Scanned" value={state.scanOutput ? 'Yes' : 'No'} />
+        <Metric label="Confidence" value={averageConfidence ? `${averageConfidence}%` : '0%'} />
         <Metric label="Marks" value={latestResult ? `${latestResult.awardedMarks}/${latestResult.totalMarks}` : '0/0'} />
-        <Metric label="Report" value={state.exportJob ? 'Ready' : 'Not Ready'} />
       </section>
 
       <section className="demo-card">
         <div>
           <p className="eyebrow">Question Paper</p>
-          <h2>Generate And Print</h2>
+          <h2>Generate, Print, Then Fill On Paper</h2>
         </div>
         <div className="stack compact">
           <select
@@ -389,6 +486,9 @@ function DemoDashboard({
                 selectedAssessmentId: event.target.value,
                 paperBatch: null,
                 scanBatch: null,
+                scanOutput: null,
+                roiCrops: [],
+                reviewTasks: [],
                 results: [],
                 crops: [],
                 exportJob: null
@@ -420,9 +520,11 @@ function DemoDashboard({
             <code>{selectedPage.qrText}</code>
           </div>
         ) : (
-          <p className="muted">Generate the question paper before printing.</p>
+          <p className="muted">Generate the question paper before opening the camera.</p>
         )}
       </section>
+
+      <CameraScanner disabled={!state.paperBatch} onScanPhoto={onScanPhoto} />
 
       <section className="demo-card">
         <div>
@@ -444,22 +546,221 @@ function DemoDashboard({
         )}
       </section>
 
-      <section className="demo-card">
-        <div>
-          <p className="eyebrow">Dashboard</p>
-          <h2>Result And Report</h2>
-        </div>
-        <div className="demo-actions">
-          <button disabled={!state.selectedAssessmentId} onClick={onGenerateReport} type="button">
-            Generate Report
-          </button>
-          <button className="secondary" disabled={!state.exportJob} onClick={onDownloadReport} type="button">
-            Download CSV
-          </button>
-        </div>
-        <FinalMarks state={state} />
-      </section>
+      <ResultPanel
+        state={state}
+        onTeacherCheck={onTeacherCheck}
+        onGenerateReport={onGenerateReport}
+        onDownloadReport={onDownloadReport}
+      />
     </section>
+  );
+}
+
+function CameraScanner({ disabled, onScanPhoto }) {
+  const videoRef = useRef(null);
+  const fileInputRef = useRef(null);
+  const [stream, setStream] = useState(null);
+  const [capturedFile, setCapturedFile] = useState(null);
+  const [previewUrl, setPreviewUrl] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [cameraError, setCameraError] = useState('');
+
+  function clearPreview() {
+    setCapturedFile(null);
+    setPreviewUrl((current) => {
+      if (current) URL.revokeObjectURL(current);
+      return '';
+    });
+  }
+
+  function stopCamera() {
+    stream?.getTracks().forEach((track) => track.stop());
+    setStream(null);
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+  }
+
+  useEffect(() => () => stopCamera(), [stream]);
+
+  async function openCamera() {
+    setCameraError('');
+    clearPreview();
+    try {
+      if (window.SmartFLNAndroidPrint?.printHtml) {
+        fileInputRef.current?.click();
+        return;
+      }
+      if (!navigator.mediaDevices?.getUserMedia) {
+        fileInputRef.current?.click();
+        return;
+      }
+      const mediaStream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: { facingMode: { ideal: 'environment' } }
+      });
+      setStream(mediaStream);
+      if (videoRef.current) {
+        videoRef.current.srcObject = mediaStream;
+        await videoRef.current.play();
+      }
+    } catch (error) {
+      setCameraError(`${error.message} Use Choose Photo to open the device camera.`);
+    }
+  }
+
+  async function capturePhoto() {
+    const video = videoRef.current;
+    if (!video?.videoWidth || !video?.videoHeight) {
+      setCameraError('Camera is not ready yet.');
+      return;
+    }
+    const canvas = document.createElement('canvas');
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.9));
+    const file = new File([blob], `smartfln-scan-${Date.now()}.jpg`, { type: 'image/jpeg' });
+    stopCamera();
+    setCapturedFile(file);
+    setPreviewUrl(URL.createObjectURL(blob));
+  }
+
+  function chooseFile(event) {
+    const file = event.target.files?.[0] ?? null;
+    clearPreview();
+    if (file) {
+      stopCamera();
+      setCapturedFile(file);
+      setPreviewUrl(URL.createObjectURL(file));
+    }
+  }
+
+  async function uploadPhoto() {
+    setBusy(true);
+    try {
+      await onScanPhoto(capturedFile);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="demo-card camera-card">
+      <div>
+        <p className="eyebrow">Scan Paper</p>
+        <h2>Open Camera, Capture, Retake Or Run OCR</h2>
+      </div>
+
+      {stream ? <video className="camera-view" muted playsInline ref={videoRef} /> : null}
+      {previewUrl ? <img alt="Captured answer sheet" className="camera-view" src={previewUrl} /> : null}
+      {!stream && !previewUrl ? (
+        <div className="camera-placeholder">
+          <strong>Camera preview will appear here.</strong>
+          <span>Place the full printed sheet inside the frame with QR visible.</span>
+        </div>
+      ) : null}
+
+      <div className="demo-actions">
+        {!stream ? (
+          <button disabled={disabled || busy} onClick={openCamera} type="button">
+            Open Camera
+          </button>
+        ) : (
+          <button onClick={capturePhoto} type="button">
+            Capture Photo
+          </button>
+        )}
+        {capturedFile ? (
+          <>
+            <button className="secondary" disabled={busy} onClick={openCamera} type="button">
+              Retake
+            </button>
+            <button disabled={busy} onClick={uploadPhoto} type="button">
+              {busy ? 'Running OCR' : 'Upload And Run OCR'}
+            </button>
+          </>
+        ) : null}
+        <label className="file-button">
+          Choose Photo
+          <input
+            accept="image/*"
+            capture="environment"
+            disabled={disabled || busy}
+            onChange={chooseFile}
+            ref={fileInputRef}
+            type="file"
+          />
+        </label>
+      </div>
+
+      {disabled ? <p className="muted">Generate the question paper before scanning.</p> : null}
+      {cameraError ? <p className="notice error">{cameraError}</p> : null}
+    </section>
+  );
+}
+
+function ResultPanel({ state, onTeacherCheck, onGenerateReport, onDownloadReport }) {
+  return (
+    <section className="demo-card">
+      <div>
+        <p className="eyebrow">OCR Result</p>
+        <h2>Confidence, Teacher Check, Final Marks</h2>
+      </div>
+
+      {state.crops.length === 0 ? (
+        <p className="muted">Capture and upload the filled paper to show OCR result here.</p>
+      ) : (
+        <FinalMarks state={state} />
+      )}
+
+      {state.reviewTasks.length > 0 ? (
+        <div className="check-list">
+          {state.reviewTasks.map((task) => (
+            <TeacherCheckCard key={task.id} task={task} roiCrops={state.roiCrops} onTeacherCheck={onTeacherCheck} />
+          ))}
+        </div>
+      ) : state.crops.length > 0 ? (
+        <p className="notice">All answers are ready for report generation.</p>
+      ) : null}
+
+      <div className="demo-actions">
+        <button disabled={state.crops.length === 0 || state.reviewTasks.length > 0} onClick={onGenerateReport} type="button">
+          Generate Report
+        </button>
+        <button className="secondary" disabled={!state.exportJob} onClick={onDownloadReport} type="button">
+          Download CSV
+        </button>
+      </div>
+    </section>
+  );
+}
+
+function TeacherCheckCard({ task, roiCrops, onTeacherCheck }) {
+  const cropImage = roiCrops.find((crop) => crop.questionId === task.questionId)?.dataUrl ?? task.crop.cropPreviewDataUrl;
+
+  return (
+    <article className="check-card">
+      <div>
+        <strong>{task.question.prompt}</strong>
+        <span>{Math.round((task.crop.recognitionConfidence ?? 0) * 100)}% confidence</span>
+      </div>
+      {cropImage ? <img alt="Answer crop" src={cropImage} /> : null}
+      <div className="review-facts">
+        <span>Recognized</span>
+        <strong>{String(task.crop.recognizedAnswer || 'Blank')}</strong>
+        <span>Marks</span>
+        <strong>{task.question.maxMarks}</strong>
+      </div>
+      <div className="demo-actions">
+        <button onClick={() => onTeacherCheck(task, 'accepted')} type="button">
+          Correct
+        </button>
+        <button className="danger" onClick={() => onTeacherCheck(task, 'rejected')} type="button">
+          Wrong
+        </button>
+      </div>
+    </article>
   );
 }
 

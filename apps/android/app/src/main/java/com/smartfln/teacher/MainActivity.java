@@ -1,13 +1,17 @@
 package com.smartfln.teacher;
 
+import android.Manifest;
 import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.content.Context;
+import android.content.pm.PackageManager;
+import android.os.Build;
 import android.os.Bundle;
 import android.print.PrintAttributes;
 import android.print.PrintDocumentAdapter;
 import android.print.PrintManager;
 import android.webkit.JavascriptInterface;
+import android.webkit.PermissionRequest;
 import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
@@ -15,6 +19,7 @@ import android.webkit.WebViewClient;
 
 public class MainActivity extends Activity {
     private static final String SMARTFLN_URL = "http://192.168.1.4:5174/";
+    private static final int CAMERA_PERMISSION_REQUEST = 1001;
     private WebView webView;
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -32,9 +37,19 @@ public class MainActivity extends Activity {
         settings.setUseWideViewPort(true);
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
 
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
+                && checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Manifest.permission.CAMERA}, CAMERA_PERMISSION_REQUEST);
+        }
+
         webView.addJavascriptInterface(new PrintBridge(), "SmartFLNAndroidPrint");
         webView.setWebViewClient(new WebViewClient());
-        webView.setWebChromeClient(new WebChromeClient());
+        webView.setWebChromeClient(new WebChromeClient() {
+            @Override
+            public void onPermissionRequest(PermissionRequest request) {
+                runOnUiThread(() -> request.grant(request.getResources()));
+            }
+        });
         webView.loadUrl(SMARTFLN_URL);
     }
 
