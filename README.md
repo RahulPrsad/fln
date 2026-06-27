@@ -2,6 +2,23 @@
 
 AI Powered QR Enabled Assessment System
 
+## Repository Layout
+
+SmartFLN is now organized into clear product areas:
+
+```text
+apps/web       Frontend teacher web app
+apps/api       Backend MERN API
+apps/android   Android APK WebView wrapper
+services/model Computer vision, OCR, HTR, and model experiments
+services/workers Future background workers
+docs           Architecture, API, deployment, and model documentation
+```
+
+Model work should happen inside `services/model` first. The frontend and backend should only be changed when a tested model contract is ready to integrate.
+
+More details: [docs/REPO_STRUCTURE.md](docs/REPO_STRUCTURE.md)
+
 ## Project Vision
 
 SmartFLN is a paper-first assessment intelligence platform for foundational learning. The vision is to digitize school assessments without forcing schools, teachers, or young children to abandon paper.

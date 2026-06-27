@@ -12,6 +12,16 @@ SmartFLN should not run OCR on the full photographed page. The production path i
 6. Score only high-confidence answers automatically.
 7. Send low-confidence or unsupported answer types to teacher review.
 
+## Model Workspace
+
+All new model, OpenCV, OCR, HTR, crop-alignment, and evaluation work should be developed in:
+
+```text
+services/model
+```
+
+The MERN backend should keep only the provider adapter and workflow orchestration. Experimental recognition code should not be added directly inside `apps/api`.
+
 ## Pretrained Model Layer
 
 The OCR/HTR layer must be provider-based so the product can switch models without changing teacher workflow.

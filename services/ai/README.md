@@ -2,6 +2,8 @@
 
 This folder is reserved for AI and computer vision services.
 
+New model work should now happen in `services/model`. This folder is kept as a legacy placeholder for older architecture notes.
+
 Planned services:
 
 - QR reading

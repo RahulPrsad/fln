@@ -1,0 +1,10 @@
+[project]
+name = "smartfln-model"
+version = "0.1.0"
+description = "SmartFLN computer vision and handwriting recognition workspace"
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.smartfln]
+workspace = "services/model"
+status = "scaffold"
