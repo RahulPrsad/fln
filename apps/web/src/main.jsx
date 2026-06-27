@@ -51,6 +51,36 @@ async function downloadArtifact(path, token) {
   URL.revokeObjectURL(url);
 }
 
+async function printArtifact(path, token) {
+  const response = await fetch(`${apiBaseUrl}${path}`, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  if (!response.ok) {
+    throw new Error('Print file could not be loaded.');
+  }
+  const html = await response.text();
+  if (window.SmartFLNAndroidPrint?.printHtml) {
+    window.SmartFLNAndroidPrint.printHtml(html);
+    return;
+  }
+
+  const frame = document.createElement('iframe');
+  frame.title = 'SmartFLN Print';
+  frame.style.position = 'fixed';
+  frame.style.right = '0';
+  frame.style.bottom = '0';
+  frame.style.width = '0';
+  frame.style.height = '0';
+  frame.style.border = '0';
+  frame.onload = () => {
+    frame.contentWindow?.focus();
+    frame.contentWindow?.print();
+    window.setTimeout(() => frame.remove(), 60000);
+  };
+  document.body.appendChild(frame);
+  frame.srcdoc = html;
+}
+
 function canManage(user) {
   return user?.permissions?.some((permission) => ['school:manage', 'roster:manage', 'assessment:manage'].includes(permission));
 }
@@ -260,6 +290,9 @@ function Workspace({ session, onLogout }) {
     try {
       const result = await action();
       await loadAll(result?.assessmentId ?? state.selectedAssessmentId);
+      if (result?.statePatch) {
+        setState((current) => ({ ...current, ...result.statePatch }));
+      }
       setNotice(success);
       return result;
     } catch (error) {
@@ -329,7 +362,7 @@ function Workspace({ session, onLogout }) {
         }
       });
       setState((current) => ({ ...current, paperBatch }));
-      return { assessmentId: state.selectedAssessmentId };
+      return { assessmentId: state.selectedAssessmentId, statePatch: { paperBatch } };
     }, 'Papers generated.');
   }
 
@@ -416,19 +449,29 @@ function Workspace({ session, onLogout }) {
         scanOutput: { resolved, scanPage },
         roiCrops
       }));
-      return { assessmentId: resolved.assessment.id };
+      return {
+        assessmentId: resolved.assessment.id,
+        statePatch: {
+          selectedAssessmentId: resolved.assessment.id,
+          selectedClassId: resolved.assessment.classSectionId,
+          scanBatch,
+          scanOutput: { resolved, scanPage },
+          roiCrops
+        }
+      };
     }, 'Photo scan processed. Doubtful answers are ready for review.');
   }
 
-  async function resolveReview(task) {
+  async function resolveReview(task, decision = 'accepted') {
     return runAction(async () => {
+      const accepted = decision === 'accepted';
       await api(`/api/v1/review-tasks/${task.id}/decision`, {
         method: 'POST',
         token,
         body: {
-          decision: 'accepted',
-          awardedMarks: task.question.maxMarks,
-          finalAnswer: task.crop.recognizedAnswer
+          decision,
+          awardedMarks: accepted ? task.question.maxMarks : 0,
+          finalAnswer: accepted ? task.crop.recognizedAnswer : ''
         }
       });
       return { assessmentId: task.assessmentId };
@@ -458,12 +501,36 @@ function Workspace({ session, onLogout }) {
     }, 'Export ready.');
   }
 
+  async function printFirstPaper() {
+    setNotice('');
+    try {
+      if (!state.paperBatch?.id || !state.paperBatch.paperInstances?.[0]?.studentId) {
+        throw new Error('Generate a paper first.');
+      }
+      await printArtifact(
+        `/api/v1/paper-batches/${state.paperBatch.id}/print?studentId=${state.paperBatch.paperInstances[0].studentId}`,
+        token
+      );
+      setNotice('Paper print opened.');
+    } catch (error) {
+      setNotice(error.message);
+    }
+  }
+
+  async function submitFinalMarks() {
+    if (state.reviewTasks.length > 0) {
+      setNotice('Finish manual checks before submitting marks.');
+      return null;
+    }
+    return finalizeResults();
+  }
+
   return (
-    <main className="app-shell">
+    <main className="app-shell teacher-only">
       <header className="topbar">
         <div>
           <p className="eyebrow">SmartFLN</p>
-          <h1>{canManage(session.user) ? 'School Assessment Operations' : 'Teacher Assessment Desk'}</h1>
+          <h1>Teacher Assessment Flow</h1>
         </div>
         <div className="user-block">
           <span>{session.user.displayName}</span>
@@ -473,28 +540,217 @@ function Workspace({ session, onLogout }) {
         </div>
       </header>
 
-      <nav className="tabs" aria-label="Workspace">
-        {visibleTabs.map((tab) => (
-          <button className={activeTab === tab ? 'tab-active' : ''} key={tab} onClick={() => setActiveTab(tab)} type="button">
-            {tab}
-          </button>
-        ))}
-      </nav>
-
       {notice ? <p className={notice.includes('required') || notice.includes('permission') ? 'notice error' : 'notice'}>{notice}</p> : null}
 
-      {activeTab === 'Dashboard' ? (
-        <Dashboard state={state} onAssess={createAssessmentFlow} onPapers={generatePapers} onScan={processScan} onReview={resolveReview} onFinalize={finalizeResults} onExport={createExport} user={session.user} />
+      <TeacherFlow
+        state={state}
+        setState={setState}
+        onGenerate={generatePapers}
+        onPrint={printFirstPaper}
+        onScanFile={scanUploadedPaper}
+        onReview={resolveReview}
+        onSubmitMarks={submitFinalMarks}
+      />
+      {state.reviewTasks.length > 0 ? (
+        <ReviewOverlay task={state.reviewTasks[0]} roiCrops={state.roiCrops} onReview={resolveReview} />
       ) : null}
-      {activeTab === 'Roster' ? <Roster state={state} /> : null}
-      {activeTab === 'Assessments' ? <Assessments state={state} setState={setState} onAssess={createAssessmentFlow} user={session.user} /> : null}
-      {activeTab === 'Papers' ? <Papers state={state} token={token} onPapers={generatePapers} setNotice={setNotice} /> : null}
-      {activeTab === 'Scanner' ? <Scanner state={state} onScan={processScan} onScanFile={scanUploadedPaper} /> : null}
-      {activeTab === 'Review' ? <Review state={state} onResolve={resolveReview} /> : null}
-      {activeTab === 'Results' ? <Results state={state} onFinalize={finalizeResults} /> : null}
-      {activeTab === 'Analytics' ? <Analytics analytics={state.analytics} /> : null}
-      {activeTab === 'Exports' ? <Exports state={state} token={token} onExport={createExport} setNotice={setNotice} /> : null}
     </main>
+  );
+}
+
+function TeacherFlow({ state, setState, onGenerate, onPrint, onScanFile, onReview, onSubmitMarks }) {
+  const [selectedFile, setSelectedFile] = useState(null);
+  const [manualQrText, setManualQrText] = useState('');
+  const [previewUrl, setPreviewUrl] = useState('');
+  const [busy, setBusy] = useState(false);
+  const selectedPaper = state.paperBatch?.paperInstances?.[0];
+  const selectedPage = selectedPaper?.pages?.[0];
+  const pendingTask = state.reviewTasks[0];
+
+  function chooseFile(event) {
+    const file = event.target.files?.[0] ?? null;
+    setSelectedFile(file);
+    setPreviewUrl((current) => {
+      if (current) URL.revokeObjectURL(current);
+      return file ? URL.createObjectURL(file) : '';
+    });
+  }
+
+  async function submitScan() {
+    setBusy(true);
+    try {
+      await onScanFile({ file: selectedFile, manualQrText });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="flow-stack">
+      <section className="flow-card">
+        <div className="step-badge">1</div>
+        <div className="flow-body">
+          <h2>Generate Paper</h2>
+          <div className="stack compact">
+            <select
+              value={state.selectedAssessmentId}
+              onChange={(event) =>
+                setState((current) => ({
+                  ...current,
+                  selectedAssessmentId: event.target.value,
+                  paperBatch: null,
+                  scanOutput: null,
+                  roiCrops: []
+                }))
+              }
+            >
+              {state.assessments.map((assessment) => (
+                <option key={assessment.id} value={assessment.id}>
+                  {assessment.title}
+                </option>
+              ))}
+            </select>
+            <button disabled={!state.selectedAssessmentId} onClick={onGenerate} type="button">
+              Generate Paper
+            </button>
+          </div>
+          {selectedPage ? (
+            <div className="status-line">
+              <strong>Ready</strong>
+              <span>{selectedPaper.studentId}</span>
+              <code>{selectedPage.qrText}</code>
+            </div>
+          ) : null}
+        </div>
+      </section>
+
+      <section className="flow-card">
+        <div className="step-badge">2</div>
+        <div className="flow-body">
+          <h2>Print Paper</h2>
+          <button disabled={!state.paperBatch} onClick={onPrint} type="button">
+            Print Paper
+          </button>
+        </div>
+      </section>
+
+      <section className="flow-card">
+        <div className="step-badge">3</div>
+        <div className="flow-body">
+          <h2>Scan Filled Sheet</h2>
+          <div className="stack compact">
+            <input accept="image/*" capture="environment" onChange={chooseFile} type="file" />
+            {previewUrl ? <img alt="Selected paper scan" className="scan-preview" src={previewUrl} /> : null}
+            <input
+              placeholder="QR text fallback"
+              value={manualQrText}
+              onChange={(event) => setManualQrText(event.target.value)}
+            />
+            <button disabled={busy || (!selectedFile && !manualQrText.trim())} onClick={submitScan} type="button">
+              {busy ? 'Running OCR' : 'Scan And Run OCR'}
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <section className="flow-card">
+        <div className="step-badge">4</div>
+        <div className="flow-body">
+          <h2>Manual Check</h2>
+          {pendingTask ? (
+            <div className="review-mini">
+              <strong>{pendingTask.question.prompt}</strong>
+              <span>{Math.round((pendingTask.crop.recognitionConfidence ?? 0) * 100)}% confidence</span>
+              <div className="action-row">
+                <button onClick={() => onReview(pendingTask, 'accepted')} type="button">
+                  Correct
+                </button>
+                <button className="danger" onClick={() => onReview(pendingTask, 'rejected')} type="button">
+                  Wrong
+                </button>
+              </div>
+            </div>
+          ) : (
+            <p className="muted">No manual checks pending.</p>
+          )}
+        </div>
+      </section>
+
+      <section className="flow-card">
+        <div className="step-badge">5</div>
+        <div className="flow-body">
+          <h2>Final Marks</h2>
+          <button disabled={state.crops.length === 0 || state.reviewTasks.length > 0} onClick={onSubmitMarks} type="button">
+            Submit Final Marks
+          </button>
+          <FinalMarks state={state} />
+        </div>
+      </section>
+    </section>
+  );
+}
+
+function ReviewOverlay({ task, roiCrops, onReview }) {
+  const cropImage = roiCrops.find((crop) => crop.questionId === task.questionId)?.dataUrl ?? task.crop.cropPreviewDataUrl;
+
+  return (
+    <div className="review-overlay" role="dialog" aria-modal="true" aria-labelledby="review-title">
+      <section className="review-modal">
+        <div>
+          <p className="eyebrow">Manual Check</p>
+          <h2 id="review-title">{task.question.prompt}</h2>
+        </div>
+        {cropImage ? <img alt="Answer crop" className="review-crop" src={cropImage} /> : null}
+        <div className="review-facts">
+          <span>Recognized answer</span>
+          <strong>{String(task.crop.recognizedAnswer || 'Blank')}</strong>
+          <span>Confidence</span>
+          <strong>{Math.round((task.crop.recognitionConfidence ?? 0) * 100)}%</strong>
+          <span>Marks</span>
+          <strong>{task.question.maxMarks}</strong>
+        </div>
+        <div className="modal-actions">
+          <button onClick={() => onReview(task, 'accepted')} type="button">
+            Correct
+          </button>
+          <button className="danger" onClick={() => onReview(task, 'rejected')} type="button">
+            Wrong
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function FinalMarks({ state }) {
+  const latest = state.results[0];
+  return (
+    <div className="final-box">
+      <div className="metric compact-metric">
+        <span>Pending</span>
+        <strong>{state.reviewTasks.length}</strong>
+      </div>
+      <div className="metric compact-metric">
+        <span>Score</span>
+        <strong>{latest ? `${latest.awardedMarks}/${latest.totalMarks}` : '0/0'}</strong>
+      </div>
+      <div className="metric compact-metric">
+        <span>Percent</span>
+        <strong>{latest ? `${latest.percentage}%` : '0%'}</strong>
+      </div>
+      {state.crops.length > 0 ? (
+        <Table
+          columns={['Question', 'Answer', 'Confidence', 'Marks', 'Status']}
+          rows={state.crops.map((crop) => [
+            crop.questionId,
+            String(crop.recognizedAnswer || 'Blank'),
+            `${Math.round((crop.recognitionConfidence ?? 0) * 100)}%`,
+            `${crop.awardedMarks}/${crop.maxMarks}`,
+            crop.status
+          ])}
+        />
+      ) : null}
+    </div>
   );
 }
 

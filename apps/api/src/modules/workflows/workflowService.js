@@ -721,12 +721,13 @@ export function createWorkflowService(store, { ocrService = null } = {}) {
           scanPageId: scanPage.id,
           assessmentId: assessment.id,
           studentId: paperInstance.studentId,
-          questionId: question.id,
-          answerRegionId: region.id,
-          cropUri: ocrCrop?.cropUri ?? `memory://crops/${scanPage.id}/${region.id}`,
-          ...recognition,
-          createdAt: now()
-        };
+        questionId: question.id,
+        answerRegionId: region.id,
+        cropUri: ocrCrop?.cropUri ?? `memory://crops/${scanPage.id}/${region.id}`,
+        cropPreviewDataUrl: ocrCrop?.imageDataUrl ?? null,
+        ...recognition,
+        createdAt: now()
+      };
       })
     );
 
