@@ -22,7 +22,26 @@ doubtful cases -> OpenAI fallback + teacher review
 
 ## Model Inputs
 
-The model service receives answer crops, not the full classroom photo, once the backend has resolved the paper identity and template.
+The model service supports two MVP input modes.
+
+### Full-Page Scan Input
+
+Use this when testing the QR structured answer-paper workflow directly:
+
+- `imageDataUrl`: full scanned page
+- `qrText`: optional QR text already decoded by the browser/API
+- `student_id`, `paper_id`, `test_id`: optional override fields
+- `template`: optional inline template
+
+When `template` is not supplied, the service loads:
+
+```text
+services/model/templates/{paper_id}.json
+```
+
+### Crop Input
+
+The existing MERN backend can still send answer crops after it resolves paper identity and template.
 
 Each crop must include:
 
@@ -44,6 +63,59 @@ Each crop returns:
 - `providerStatus`
 - `needsReview`
 - `diagnostics`
+
+Full-page output returns:
+
+- `student_id`
+- `paper_id`
+- `test_id`
+- `identity`
+- `page`
+- `answers[]`
+- `total_marks`
+- `awarded_marks`
+- `percentage`
+- `needs_teacher_review`
+- `review_count`
+- `final_confidence`
+- `pipeline`
+
+## Implemented MVP Stages
+
+```text
+HTTP /v1/infer
+  -> app.pipeline.evaluator.infer
+  -> preprocess.load_image_from_data_url
+  -> vision.read_qr_text
+  -> vision.parse_qr_payload
+  -> templates.load_template
+  -> vision.detect_page_markers
+  -> vision.align_page
+  -> roi.crop_answer_roi
+  -> preprocess.preprocess_roi
+  -> recognition.recognize_answer
+  -> scoring.score_answer
+```
+
+Current runtime behavior:
+
+- QR reading uses supplied `qrText` immediately.
+- QR image decoding becomes active when `opencv-python-headless` is installed.
+- Marker detection and perspective correction become active when OpenCV is installed.
+- Without OpenCV, the service resizes the page to the configured template size and marks marker status as fallback.
+- OCR uses configured providers only; if none are available, answers are routed to teacher review.
+
+## OCR Provider Strategy
+
+Configured by `SMARTFLN_MODEL_OCR_PROVIDER`:
+
+- `openai`: cloud pretrained vision OCR through the OpenAI Responses API
+- `paddleocr`: local pretrained PaddleOCR when installed
+- `easyocr`: local pretrained EasyOCR when installed
+- `tesseract`: local Tesseract wrapper when installed
+- `auto`: first available local OCR engine
+
+OpenAI is the fastest practical route for high-quality MVP validation with real school scans. Local PaddleOCR/EasyOCR remain useful for cost control, offline pilots, and later fine-tuned models.
 
 ## Accuracy Targets
 
@@ -99,6 +171,7 @@ Sample request and response live in:
 ```text
 services/model/app/contracts/sample_request.json
 services/model/app/contracts/sample_response.json
+services/model/app/contracts/full_scan_request.sample.json
 ```
 
 Backend switch:

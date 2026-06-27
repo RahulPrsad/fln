@@ -1,24 +1,24 @@
-"""Dependency-free SmartFLN model service scaffold.
+"""SmartFLN model service.
 
 Run locally:
 
     python -m app.main
 
-This is intentionally simple. It gives the MERN API a stable local target while
-we build OpenCV and HTR stages behind the same `/v1/infer` contract.
+The same `/v1/infer` endpoint supports the existing crop-level backend contract
+and the new full-page QR/template evaluation contract.
 """
 
 from __future__ import annotations
 
-import base64
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import urlparse
 
+from app.pipeline.evaluator import infer
+from app.pipeline.recognition import MODEL_NAME, MODEL_VERSION, available_ocr_providers
+
 SERVICE_NAME = "smartfln-model"
-MODEL_NAME = "smartfln-htr-scaffold"
-MODEL_VERSION = "0.1.0"
 
 
 def health() -> dict[str, Any]:
@@ -27,51 +27,8 @@ def health() -> dict[str, Any]:
         "status": "ok",
         "modelName": MODEL_NAME,
         "modelVersion": MODEL_VERSION,
-    }
-
-
-def _image_size_hint(image_data_url: str) -> int:
-    if "," not in image_data_url:
-        return 0
-    try:
-        return len(base64.b64decode(image_data_url.split(",", 1)[1], validate=False))
-    except Exception:
-        return 0
-
-
-def infer(payload: dict[str, Any]) -> dict[str, Any]:
-    """Return review-safe placeholder predictions.
-
-    The scaffold does not pretend to read handwriting. It validates the service
-    shape and always emits low confidence so the API routes output to teacher
-    review until a real model is plugged in.
-    """
-
-    results = []
-    for crop in payload.get("crops", []):
-        image_size = _image_size_hint(str(crop.get("imageDataUrl", "")))
-        results.append(
-            {
-                "questionId": crop.get("questionId"),
-                "recognizedAnswer": "",
-                "confidence": 0.35,
-                "needsReview": True,
-                "modelName": MODEL_NAME,
-                "modelVersion": MODEL_VERSION,
-                "providerStatus": "scaffold",
-                "diagnostics": {
-                    "summary": "Scaffold model service reached; real OCR/HTR not enabled yet.",
-                    "questionType": crop.get("questionType"),
-                    "imageBytes": image_size,
-                },
-            }
-        )
-
-    return {
-        "scanPageId": payload.get("scanPageId"),
-        "assessmentId": payload.get("assessmentId"),
-        "studentId": payload.get("studentId"),
-        "results": results,
+        "ocrProviders": available_ocr_providers(),
+        "endpoints": ["GET /", "GET /health", "POST /v1/infer"],
     }
 
 
@@ -85,7 +42,8 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self) -> None:
-        if urlparse(self.path).path == "/health":
+        path = urlparse(self.path).path
+        if path == "/" or path == "/health":
             self._json(200, health())
             return
         self._json(404, {"error": "not_found"})

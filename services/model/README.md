@@ -23,7 +23,7 @@ SMARTFLN_OCR_PROVIDER=model_service
 SMARTFLN_MODEL_SERVICE_URL=http://127.0.0.1:8090
 ```
 
-Future production flow:
+Production target flow:
 
 ```text
 apps/web camera capture
@@ -32,7 +32,48 @@ apps/web camera capture
   -> apps/api scoring/review/result workflow
 ```
 
-OpenAI should remain a fallback and teacher-assist layer. The production model path should eventually live in this workspace.
+OpenAI can be used as a pretrained high-accuracy OCR/vision provider while we collect real SmartFLN answer crops. The long-term production model path should live in this workspace and improve from teacher-corrected labels.
+
+## MVP Full-Page Flow
+
+`POST /v1/infer` supports a full scanned answer sheet:
+
+```text
+uploaded scanned image
+  -> QR read or supplied qrText
+  -> student_id, paper_id, test_id extraction
+  -> four marker detection when OpenCV is installed
+  -> perspective correction or safe resize fallback
+  -> A4 template coordinate normalization
+  -> answer-box ROI crop per question
+  -> ROI preprocessing
+  -> OCR provider
+  -> answer normalization and scoring
+  -> confidence and teacher-review routing
+  -> final result JSON
+```
+
+The same endpoint also keeps the older crop-level contract used by `apps/api`.
+
+## OCR Providers
+
+The service checks these providers:
+
+- `SMARTFLN_MODEL_OCR_PROVIDER=openai`
+- `SMARTFLN_MODEL_OCR_PROVIDER=paddleocr`
+- `SMARTFLN_MODEL_OCR_PROVIDER=easyocr`
+- `SMARTFLN_MODEL_OCR_PROVIDER=tesseract`
+- `SMARTFLN_MODEL_OCR_PROVIDER=auto`
+
+For OpenAI vision OCR:
+
+```text
+SMARTFLN_MODEL_OCR_PROVIDER=openai
+SMARTFLN_OPENAI_API_KEY=<server-side key>
+SMARTFLN_OPENAI_MODEL=gpt-5.5
+```
+
+Do not commit API keys. Keep them in local environment variables or deployment secrets.
 
 ## Folder Structure
 
@@ -45,11 +86,18 @@ services/model/
     main.py
     contracts/
       inference.schema.json
+      full_scan.schema.json
+      full_scan_request.sample.json
     pipeline/
       preprocess.py
+      vision.py
+      templates.py
       roi.py
       recognition.py
+      evaluator.py
       scoring.py
+  templates/
+    demo-paper.json
   data/
     raw/
     processed/
@@ -63,9 +111,10 @@ services/model/
 
 1. Do not change teacher UI or backend workflow while experimenting with models.
 2. Add sample scans under ignored local folders, not git.
-3. Keep model input/output compatible with `app/contracts/inference.schema.json`.
-4. Track every model experiment with accuracy, latency, and failure cases.
-5. Only promote a model into the backend after it beats the current fallback on real scan samples.
+3. Keep crop input/output compatible with `app/contracts/inference.schema.json`.
+4. Keep full-scan input compatible with `app/contracts/full_scan.schema.json`.
+5. Track every model experiment with accuracy, latency, and failure cases.
+6. Only promote a model into the backend after it beats the current fallback on real scan samples.
 
 ## First Model Milestones
 
@@ -75,7 +124,7 @@ services/model/
 4. Add separate detectors for MCQ, numeric, matching, and short text.
 5. Evaluate dedicated HTR models against OpenAI fallback.
 
-## Run The Scaffold Service
+## Run The Model Service
 
 Use the bundled or system Python runtime:
 
@@ -86,10 +135,19 @@ python -m app.main
 
 Endpoints:
 
+- `GET /`
 - `GET /health`
 - `POST /v1/infer`
 
-The scaffold intentionally returns low-confidence empty answers. It proves the contract and integration path without pretending to be a real model.
+Example full-scan request:
+
+```bash
+curl -X POST http://127.0.0.1:8090/v1/infer \
+  -H "Content-Type: application/json" \
+  --data @services/model/app/contracts/full_scan_request.sample.json
+```
+
+If no OCR provider is installed or configured, the pipeline still crops, scores safely, and marks answers for teacher review with `providerStatus=ocr_engine_not_configured`.
 
 Run tests:
 

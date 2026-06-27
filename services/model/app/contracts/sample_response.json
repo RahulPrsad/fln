@@ -6,15 +6,22 @@
     {
       "questionId": "q_demo_2",
       "recognizedAnswer": "",
-      "confidence": 0.35,
+      "confidence": 0.407,
       "needsReview": true,
-      "modelName": "smartfln-htr-scaffold",
-      "modelVersion": "0.1.0",
-      "providerStatus": "scaffold",
+      "modelName": "smartfln-structured-ocr",
+      "modelVersion": "0.2.0",
+      "providerStatus": "ocr_engine_not_configured",
       "diagnostics": {
-        "summary": "Scaffold model service reached; real OCR/HTR not enabled yet.",
+        "hint": "Set SMARTFLN_MODEL_OCR_PROVIDER=openai with an API key, or install an OCR extra such as paddleocr/easyocr.",
         "questionType": "numeric",
-        "imageBytes": 5
+        "scoring": {
+          "awardedMarks": 0.0,
+          "maxMarks": 1.0,
+          "confidence": 0.407,
+          "confidenceBand": "very_low",
+          "needsReview": true,
+          "status": "needs_review"
+        }
       }
     }
   ]
