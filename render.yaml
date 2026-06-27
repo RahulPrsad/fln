@@ -1,0 +1,66 @@
+services:
+  - type: web
+    name: api-smartfln
+    runtime: node
+    plan: starter
+    region: singapore
+    branch: dev
+    buildCommand: corepack enable && corepack prepare pnpm@11.7.0 --activate && pnpm install --frozen-lockfile
+    startCommand: node apps/api/src/main.js
+    healthCheckPath: /health/ready
+    autoDeploy: true
+    envVars:
+      - key: SMARTFLN_ENV
+        value: production
+      - key: SMARTFLN_API_HOST
+        value: 0.0.0.0
+      - key: SMARTFLN_SERVICE_NAME
+        value: smartfln-api
+      - key: SMARTFLN_LOG_LEVEL
+        value: info
+      - key: SMARTFLN_STORE_PROVIDER
+        value: mongo
+      - key: SMARTFLN_MONGO_URI
+        sync: false
+      - key: SMARTFLN_MONGO_DB_NAME
+        value: smartfln_prod
+      - key: SMARTFLN_JWT_SECRET
+        generateValue: true
+      - key: SMARTFLN_QR_SIGNING_SECRET
+        generateValue: true
+      - key: SMARTFLN_CORS_ORIGINS
+        value: https://smartfln.vercel.app
+      - key: SMARTFLN_PUBLIC_APP_URL
+        value: https://smartfln.vercel.app
+      - key: SMARTFLN_PUBLIC_API_URL
+        value: https://api-smartfln.onrender.com
+      - key: SMARTFLN_OBJECT_STORAGE_PROVIDER
+        value: r2
+      - key: SMARTFLN_OBJECT_STORAGE_BUCKET
+        sync: false
+      - key: SMARTFLN_R2_ACCOUNT_ID
+        sync: false
+      - key: SMARTFLN_R2_ACCESS_KEY_ID
+        sync: false
+      - key: SMARTFLN_R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: SMARTFLN_R2_ENDPOINT_URL
+        sync: false
+      - key: SMARTFLN_SMS_PROVIDER
+        value: twilio
+      - key: SMARTFLN_TWILIO_ACCOUNT_SID
+        sync: false
+      - key: SMARTFLN_TWILIO_AUTH_TOKEN
+        sync: false
+      - key: SMARTFLN_TWILIO_FROM_NUMBER
+        sync: false
+      - key: SMARTFLN_EMAIL_PROVIDER
+        value: resend
+      - key: SMARTFLN_RESEND_API_KEY
+        sync: false
+      - key: SMARTFLN_EMAIL_FROM
+        value: SmartFLN <noreply@smartfln.vercel.app>
+      - key: SMARTFLN_SENTRY_DSN
+        sync: false
+      - key: SMARTFLN_SEED_DEMO_USERS
+        value: false

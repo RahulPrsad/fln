@@ -18,6 +18,7 @@ Project-level product and architecture documents remain at the repository root u
 - The integrated web workflow build is documented in `INTEGRATED_WORKFLOW.md`.
 - Production inputs are documented in `PRODUCTION_INPUTS.md`.
 - Production readiness status is documented in `PRODUCTION_READINESS.md`.
+- Deployment setup is documented in `DEPLOYMENT.md`.
 - The dependency-light architecture decision is documented in `adr/0001-foundation-architecture.md`.
 - The MERN stack requirement is documented in `adr/0002-mern-stack-requirement.md`.
 - The web-only MVP decision is documented in `adr/0003-web-only-mvp.md`.

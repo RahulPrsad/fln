@@ -63,6 +63,56 @@ export function createSystemRouter({ config, requireAuth }) {
             key: 'SMARTFLN_OBJECT_STORAGE_BUCKET',
             label: 'Object storage bucket',
             configured: configured(config.objectStorageBucket)
+          },
+          {
+            key: 'SMARTFLN_R2_ACCOUNT_ID',
+            label: 'Cloudflare R2 account id',
+            configured: config.objectStorageProvider !== 'r2' || configured(config.r2AccountId)
+          },
+          {
+            key: 'SMARTFLN_R2_ACCESS_KEY_ID',
+            label: 'Cloudflare R2 access key id',
+            configured: config.objectStorageProvider !== 'r2' || configured(config.r2AccessKeyId)
+          },
+          {
+            key: 'SMARTFLN_R2_SECRET_ACCESS_KEY',
+            label: 'Cloudflare R2 secret access key',
+            configured: config.objectStorageProvider !== 'r2' || configured(config.r2SecretAccessKey)
+          },
+          {
+            key: 'SMARTFLN_R2_ENDPOINT_URL',
+            label: 'Cloudflare R2 endpoint URL',
+            configured: config.objectStorageProvider !== 'r2' || configured(config.r2EndpointUrl)
+          },
+          {
+            key: 'SMARTFLN_TWILIO_ACCOUNT_SID',
+            label: 'Twilio account SID',
+            configured: config.smsProvider !== 'twilio' || configured(config.twilioAccountSid)
+          },
+          {
+            key: 'SMARTFLN_TWILIO_AUTH_TOKEN',
+            label: 'Twilio auth token',
+            configured: config.smsProvider !== 'twilio' || configured(config.twilioAuthToken)
+          },
+          {
+            key: 'SMARTFLN_TWILIO_FROM_NUMBER',
+            label: 'Twilio sender number',
+            configured: config.smsProvider !== 'twilio' || configured(config.twilioFromNumber)
+          },
+          {
+            key: 'SMARTFLN_RESEND_API_KEY',
+            label: 'Resend API key',
+            configured: config.emailProvider !== 'resend' || configured(config.resendApiKey)
+          },
+          {
+            key: 'SMARTFLN_EMAIL_FROM',
+            label: 'Transactional email sender',
+            configured: config.emailProvider !== 'resend' || configured(config.emailFrom)
+          },
+          {
+            key: 'SMARTFLN_SENTRY_DSN',
+            label: 'Sentry DSN',
+            configured: configured(config.sentryDsn)
           }
         ],
         optionalIntegrations: [

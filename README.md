@@ -493,5 +493,6 @@ Current AI/CV note:
 
 Production handoff docs:
 
+- `docs/DEPLOYMENT.md`
 - `docs/PRODUCTION_INPUTS.md`
 - `docs/PRODUCTION_READINESS.md`

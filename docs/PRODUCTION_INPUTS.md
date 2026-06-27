@@ -6,27 +6,31 @@ To deploy SmartFLN for real school usage, provide these values. Do not commit se
 
 | Item | Environment Variable | What I Need From You |
 | --- | --- | --- |
-| MongoDB Atlas URI | `SMARTFLN_MONGO_URI` | Full connection string, including username/password and cluster host |
-| MongoDB database name | `SMARTFLN_MONGO_DB_NAME` | Example: `smartfln_prod` |
+| MongoDB Atlas URI | `SMARTFLN_MONGO_URI` | `mongodb+srv://<username>:<password>@fln.eyofeum.mongodb.net/smartfln_prod?retryWrites=true&w=majority&appName=Fln` |
+| MongoDB database name | `SMARTFLN_MONGO_DB_NAME` | `smartfln_prod` |
 | JWT secret | `SMARTFLN_JWT_SECRET` | 64+ byte random secret |
 | QR signing secret | `SMARTFLN_QR_SIGNING_SECRET` | 64+ byte random secret |
-| Web app domain | `SMARTFLN_PUBLIC_APP_URL` | Example: `https://app.smartfln.com` |
-| API domain | `SMARTFLN_PUBLIC_API_URL` | Example: `https://api.smartfln.com` |
-| CORS origins | `SMARTFLN_CORS_ORIGINS` | Comma-separated allowed web URLs |
-| Object storage bucket | `SMARTFLN_OBJECT_STORAGE_BUCKET` | S3/R2/GCS bucket for scans, crops, papers, exports |
-| Object storage provider | `SMARTFLN_OBJECT_STORAGE_PROVIDER` | `s3`, `r2`, `gcs`, or `local` |
+| Web app domain | `SMARTFLN_PUBLIC_APP_URL` | `https://smartfln.vercel.app` |
+| API domain | `SMARTFLN_PUBLIC_API_URL` | `https://api-smartfln.onrender.com` |
+| CORS origins | `SMARTFLN_CORS_ORIGINS` | `https://smartfln.vercel.app` |
+| Object storage bucket | `SMARTFLN_OBJECT_STORAGE_BUCKET` | Cloudflare R2 bucket name |
+| Object storage provider | `SMARTFLN_OBJECT_STORAGE_PROVIDER` | `r2` |
+| R2 account id | `SMARTFLN_R2_ACCOUNT_ID` | Cloudflare account id |
+| R2 access key id | `SMARTFLN_R2_ACCESS_KEY_ID` | R2 S3-compatible key id |
+| R2 secret access key | `SMARTFLN_R2_SECRET_ACCESS_KEY` | R2 S3-compatible secret |
+| R2 endpoint URL | `SMARTFLN_R2_ENDPOINT_URL` | `https://<account-id>.r2.cloudflarestorage.com` |
 
 ## Recommended Before Pilot
 
 | Item | Why Needed |
 | --- | --- |
-| Cloud provider | Where API, web, workers, and storage will run |
-| Deployment target | Render, Railway, AWS ECS, Azure App Service, GCP Cloud Run, or VPS |
+| Cloud provider | Vercel, Render, MongoDB Atlas, and Cloudflare R2 |
+| Deployment target | Frontend on Vercel, backend on Render |
 | School logo/branding | Printable papers and reports |
 | First pilot school details | Tenant, school, classes, teachers, student roster |
-| OTP/SMS provider | Real teacher OTP delivery |
-| Email provider | Invites, result reports, export notifications |
-| Error tracking DSN | Sentry or equivalent |
+| OTP/SMS provider | Twilio or MSG91 |
+| Email provider | Resend |
+| Error tracking DSN | Sentry |
 | Analytics/monitoring endpoint | Production observability |
 
 ## AI/CV Inputs Needed
@@ -63,3 +67,16 @@ Production should use:
 ## Current Persistence Caveat
 
 The application currently runs with in-memory repositories. MongoDB configuration and index bootstrap helpers are present, but the runtime repository implementation still needs to be connected to MongoDB before real school data can be trusted across restarts.
+
+## Deployment Profile Provided
+
+- Frontend: Vercel
+- Backend API: Render
+- Database: MongoDB Atlas cluster `fln.eyofeum.mongodb.net`
+- Database name: `smartfln_prod`
+- Object storage: Cloudflare R2
+- SMS: Twilio or MSG91
+- Email: Resend
+- Monitoring: Sentry
+- Initial language: English
+- Planned language: Hindi

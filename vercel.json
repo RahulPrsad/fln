@@ -1,0 +1,9 @@
+{
+  "buildCommand": "pnpm --filter @smartfln/web build",
+  "installCommand": "pnpm install --frozen-lockfile",
+  "outputDirectory": "apps/web/dist",
+  "framework": "vite",
+  "env": {
+    "VITE_SMARTFLN_API_BASE_URL": "https://api-smartfln.onrender.com"
+  }
+}
