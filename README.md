@@ -12,12 +12,18 @@ apps/api       Backend MERN API
 apps/android   Android APK WebView wrapper
 services/model Computer vision, OCR, HTR, and model experiments
 services/workers Future background workers
-docs           Architecture, API, deployment, and model documentation
+docs           Product, architecture, API, deployment, and model documentation
+templates      Source paper templates and sample worksheets
 ```
 
 Model work should happen inside `services/model` first. The frontend and backend should only be changed when a tested model contract is ready to integrate.
 
-More details: [docs/REPO_STRUCTURE.md](docs/REPO_STRUCTURE.md)
+Key locations:
+
+- Model folder: [services/model](services/model)
+- Documentation index: [docs/README.md](docs/README.md)
+- Repository structure: [docs/REPO_STRUCTURE.md](docs/REPO_STRUCTURE.md)
+- Paper templates: [templates/papers](templates/papers)
 
 ## Project Vision
 

@@ -16,7 +16,8 @@ services/
   ai/        Legacy AI placeholder; new model work should use services/model
 
 packages/    Future shared packages
-docs/        Architecture, API, deployment, model, and workflow docs
+docs/        Product, architecture, API, deployment, model, and workflow docs
+templates/   Source paper templates and sample worksheets
 infra/       Infrastructure plans/config
 docker/      Local/container setup
 ```
@@ -92,3 +93,22 @@ apps/api/src/modules/ocr/
 ```
 
 That keeps the product workflow stable while the model improves.
+
+## Documentation
+
+Path: `docs`
+
+Important folders:
+
+- `docs/product` - product and UX docs
+- `docs/architecture` - architecture, database, system flow, AI engine
+- `docs/api` - REST API docs
+- `docs/engineering` - implementation plans
+- `docs/research` - research notes and metrics
+- `docs/operations` - meeting notes
+
+## Paper Templates
+
+Path: `templates/papers`
+
+This folder contains source worksheet/template files used as references for generated paper layouts.

@@ -1,25 +1,31 @@
 # SmartFLN Documentation
 
-This folder contains implementation-facing documentation.
-
-Project-level product and architecture documents remain at the repository root until the documentation structure is finalized.
+This folder contains all project documentation except the root `README.md`.
 
 ## Folders
 
 - `adr/` - architecture decision records
+- `api/` - REST API documentation
+- `architecture/` - architecture, database, AI engine, and system flow docs
+- `engineering/` - implementation and delivery plans
 - `milestones/` - milestone implementation summaries
+- `operations/` - meeting notes and operations notes
+- `product/` - product, UX, and MVP docs
+- `research/` - research notes, metrics, and reference material
 - `runbooks/` - operational and development runbooks
 
-## Current Implementation Notes
+## Core Docs
 
-- Milestone 0 foundation is documented in `milestones/MILESTONE_0.md`.
-- Milestone 1 authentication foundation is documented in `milestones/MILESTONE_1.md`.
-- Milestone 2 roster setup foundation is documented in `milestones/MILESTONE_2.md`.
-- The integrated web workflow build is documented in `INTEGRATED_WORKFLOW.md`.
-- Production inputs are documented in `PRODUCTION_INPUTS.md`.
-- Production readiness status is documented in `PRODUCTION_READINESS.md`.
-- Deployment setup is documented in `DEPLOYMENT.md`.
-- The dependency-light architecture decision is documented in `adr/0001-foundation-architecture.md`.
-- The MERN stack requirement is documented in `adr/0002-mern-stack-requirement.md`.
-- The web-only MVP decision is documented in `adr/0003-web-only-mvp.md`.
-- Local setup and test instructions are documented in `runbooks/local-development.md`.
+- Product spec: `product/PRODUCT.md`
+- UX spec: `product/UI_UX.md`
+- Architecture: `architecture/ARCHITECTURE.md`
+- System flow: `architecture/SYSTEM_FLOW.md`
+- Database: `architecture/DATABASE.md`
+- AI engine: `architecture/AI_ENGINE.md`
+- API: `api/API.md`
+- Implementation plan: `engineering/IMPLEMENTATION_PLAN.md`
+- OCR/model provider strategy: `OCR_PROVIDER.md`
+- Repository structure: `REPO_STRUCTURE.md`
+- Production inputs: `PRODUCTION_INPUTS.md`
+- Deployment: `DEPLOYMENT.md`
+- Local setup: `runbooks/local-development.md`
