@@ -623,8 +623,13 @@ export const IcrScanner: React.FC<IcrScannerProps> = ({ token, onBack }) => {
                     </div>
                   </div>
                   <div className="border border-zinc-200 bg-white rounded-lg p-3">
-                    <span className="block text-[9px] font-mono font-bold uppercase text-zinc-400 mb-2">Reference Answer</span>
-                    <div className="text-sm font-mono text-zinc-900">{item.expectedAnswer || 'Manual reference needed'}</div>
+                    <span className="block text-[9px] font-mono font-bold uppercase text-zinc-400 mb-2">Answer Key / Expected Answer</span>
+                    <div className="min-h-20 rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 text-base font-mono font-bold text-zinc-950">
+                      {item.expectedAnswer || 'Manual reference needed'}
+                    </div>
+                    <p className="mt-2 text-[10px] text-zinc-500">
+                      Use this key to mark the cropped student answer as correct, partial, or incorrect.
+                    </p>
                   </div>
                 </div>
 
