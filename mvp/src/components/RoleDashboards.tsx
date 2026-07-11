@@ -1444,7 +1444,7 @@ export const TeacherDashboard: React.FC<DashboardProps> = ({ user, token }) => {
   const [showBulkDiagnostic, setShowBulkDiagnostic] = useState(false);
 
   // Inline bulk generation state
-  const [bulkJob, setBulkJob] = useState<{ jobId: string; total: number; completed: number; status: string; pdfUrl: string; downloadUrl: string | null; error: string } | null>(null);
+  const [bulkJob, setBulkJob] = useState<{ jobId: string; total: number; completed: number; status: string; pdfUrl: string; templateUrl?: string; downloadUrl: string | null; error: string } | null>(null);
   const [bulkLoading, setBulkLoading] = useState(false);
   const [bulkError, setBulkError] = useState('');
 
@@ -1519,7 +1519,7 @@ export const TeacherDashboard: React.FC<DashboardProps> = ({ user, token }) => {
         const res = await fetch(`/api/diagnostic/bulk/${bulkJob.jobId}/progress`);
         if (res.ok) {
           const data = await res.json();
-          setBulkJob(prev => prev ? { ...prev, completed: data.completed, status: data.status, pdfUrl: data.pdfUrl || prev.pdfUrl, downloadUrl: data.downloadUrl || prev.downloadUrl, error: data.error || '' } : prev);
+          setBulkJob(prev => prev ? { ...prev, completed: data.completed, status: data.status, pdfUrl: data.pdfUrl || prev.pdfUrl, templateUrl: data.templateUrl || prev.templateUrl, downloadUrl: data.downloadUrl || prev.downloadUrl, error: data.error || '' } : prev);
           if (data.status !== 'running') clearInterval(interval);
         } else {
           clearInterval(interval);
@@ -1824,7 +1824,7 @@ export const TeacherDashboard: React.FC<DashboardProps> = ({ user, token }) => {
                       });
                       const data = await res.json();
                       if (res.ok) {
-                        setBulkJob({ ...data, total: unplaced.length, completed: 0, pdfUrl: data.pdfUrl || '', downloadUrl: data.downloadUrl || null, error: '' });
+                        setBulkJob({ ...data, total: unplaced.length, completed: 0, pdfUrl: data.pdfUrl || '', templateUrl: data.templateUrl || '', downloadUrl: data.downloadUrl || null, error: '' });
                       } else {
                         setBulkError(data.error || 'Failed to start bulk generation.');
                       }
@@ -1880,7 +1880,7 @@ export const TeacherDashboard: React.FC<DashboardProps> = ({ user, token }) => {
                   <div className="pt-2 border-t border-zinc-100">
                     <div className="p-4 bg-green-50 border border-green-200 rounded-lg space-y-3">
                       <div className="flex items-center gap-2">
-                        <span className="text-green-700 font-bold text-sm">✅ {bulkJob.total} Diagnostic Papers Generated Successfully</span>
+                        <span className="text-green-700 font-bold text-sm">Scan-ready QR + ROI papers generated successfully</span>
                       </div>
                       <div className="flex gap-3">
                         <a
@@ -1899,7 +1899,20 @@ export const TeacherDashboard: React.FC<DashboardProps> = ({ user, token }) => {
                             👁️ View Generated PDF
                           </a>
                         )}
+                        {bulkJob.templateUrl && (
+                          <a
+                            href={bulkJob.templateUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex items-center gap-1.5 bg-white hover:bg-zinc-50 text-zinc-800 border border-zinc-200 text-xs font-mono font-bold px-4 py-2.5 rounded-lg transition-colors cursor-pointer shadow-sm"
+                          >
+                            View ROI Template JSON
+                          </a>
+                        )}
                       </div>
+                      <p className="text-[11px] text-green-700 font-mono">
+                        New paper format: real QR, four corner markers, boxed questions, anchor squares, stored answer ROI coordinates.
+                      </p>
                     </div>
                   </div>
                 )}
@@ -2077,7 +2090,7 @@ export const VolunteerDashboard: React.FC<DashboardProps> = ({ user, token }) =>
   const [showBulkDiagnostic, setShowBulkDiagnostic] = useState(false);
 
   // Inline bulk generation state
-  const [bulkJob, setBulkJob] = useState<{ jobId: string; total: number; completed: number; status: string; pdfUrl: string; downloadUrl: string | null; error: string } | null>(null);
+  const [bulkJob, setBulkJob] = useState<{ jobId: string; total: number; completed: number; status: string; pdfUrl: string; templateUrl?: string; downloadUrl: string | null; error: string } | null>(null);
   const [bulkLoading, setBulkLoading] = useState(false);
   const [bulkError, setBulkError] = useState('');
 
@@ -2151,7 +2164,7 @@ export const VolunteerDashboard: React.FC<DashboardProps> = ({ user, token }) =>
         const res = await fetch(`/api/diagnostic/bulk/${bulkJob.jobId}/progress`);
         if (res.ok) {
           const data = await res.json();
-          setBulkJob(prev => prev ? { ...prev, completed: data.completed, status: data.status, pdfUrl: data.pdfUrl || prev.pdfUrl, downloadUrl: data.downloadUrl || prev.downloadUrl, error: data.error || '' } : prev);
+          setBulkJob(prev => prev ? { ...prev, completed: data.completed, status: data.status, pdfUrl: data.pdfUrl || prev.pdfUrl, templateUrl: data.templateUrl || prev.templateUrl, downloadUrl: data.downloadUrl || prev.downloadUrl, error: data.error || '' } : prev);
           if (data.status !== 'running') clearInterval(interval);
         } else {
           clearInterval(interval);
@@ -2451,7 +2464,7 @@ export const VolunteerDashboard: React.FC<DashboardProps> = ({ user, token }) =>
                       });
                       const data = await res.json();
                       if (res.ok) {
-                        setBulkJob({ ...data, total: unplaced.length, completed: 0, pdfUrl: data.pdfUrl || '', downloadUrl: data.downloadUrl || null, error: '' });
+                        setBulkJob({ ...data, total: unplaced.length, completed: 0, pdfUrl: data.pdfUrl || '', templateUrl: data.templateUrl || '', downloadUrl: data.downloadUrl || null, error: '' });
                       } else {
                         setBulkError(data.error || 'Failed to start bulk generation.');
                       }
@@ -2494,16 +2507,26 @@ export const VolunteerDashboard: React.FC<DashboardProps> = ({ user, token }) =>
                         style={{ width: `${bulkJob.total > 0 ? Math.round((bulkJob.completed / bulkJob.total) * 100) : 0}%` }} />
                     </div>
                     {bulkJob.status === 'completed' && bulkJob.downloadUrl && (
-                      <div className="flex gap-2 pt-1">
-                        <a href={bulkJob.downloadUrl} className="inline-flex items-center gap-1.5 bg-green-600 hover:bg-green-700 text-white text-xs font-mono font-bold px-3 py-2 rounded-lg transition-colors cursor-pointer">
-                          📥 Download Merged PDF ({bulkJob.total} papers)
-                        </a>
-                        {bulkJob.pdfUrl && (
-                          <a href={bulkJob.pdfUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 bg-zinc-900 hover:bg-zinc-800 text-white text-xs font-mono font-bold px-3 py-2 rounded-lg transition-colors cursor-pointer">
-                            📄 Open PDF
+                      <>
+                        <div className="flex gap-2 pt-1">
+                          <a href={bulkJob.downloadUrl} className="inline-flex items-center gap-1.5 bg-green-600 hover:bg-green-700 text-white text-xs font-mono font-bold px-3 py-2 rounded-lg transition-colors cursor-pointer">
+                            Download Scan-Ready PDF ({bulkJob.total} papers)
                           </a>
-                        )}
-                      </div>
+                          {bulkJob.pdfUrl && (
+                            <a href={bulkJob.pdfUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 bg-zinc-900 hover:bg-zinc-800 text-white text-xs font-mono font-bold px-3 py-2 rounded-lg transition-colors cursor-pointer">
+                              Open PDF
+                            </a>
+                          )}
+                          {bulkJob.templateUrl && (
+                            <a href={bulkJob.templateUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 bg-white hover:bg-zinc-50 text-zinc-800 border border-zinc-200 text-xs font-mono font-bold px-3 py-2 rounded-lg transition-colors cursor-pointer">
+                              View ROI Template JSON
+                            </a>
+                          )}
+                        </div>
+                        <p className="text-[11px] text-green-700 font-mono pt-1">
+                          Scan-ready format: real QR, four corner markers, boxed questions, anchor squares, stored answer ROI coordinates.
+                        </p>
+                      </>
                     )}
                     {bulkJob.status === 'failed' && (
                       <div className="p-2 bg-red-50 border border-red-200 rounded text-xs text-red-700">{bulkJob.error || 'Generation failed.'}</div>

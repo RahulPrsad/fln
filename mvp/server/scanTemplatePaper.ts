@@ -331,13 +331,14 @@ export async function generateScanTemplatePaper({
     });
 
     page.drawText('FLN DIAGNOSTIC QUESTION PAPER', { x: 54, y: pageHeight - 52, size: 15, font: boldFont, color: rgb(0, 0, 0) });
+    page.drawText('SCAN TEMPLATE v2 - QR + ROI READY', { x: 54, y: pageHeight - 62, size: 6.5, font: boldFont, color: rgb(0, 0, 0) });
     page.drawText(`Student: ${student.name}    Student ID: ${studentId}`, { x: 54, y: pageHeight - 72, size: 9, font, color: rgb(0, 0, 0) });
     page.drawText(`Paper ID: ${paperId}    Test ID: ${testId}    Page: 1`, { x: 54, y: pageHeight - 88, size: 8, font, color: rgb(0, 0, 0) });
 
     drawQrCode(page, payload, qrX, qrY, qrSize);
-    page.drawText('QR PAYLOAD', { x: qrX, y: qrY - 9, size: 5, font: boldFont, color: rgb(0, 0, 0) });
-    page.drawText(`SID:${studentId}`.slice(0, 26), { x: qrX, y: qrY - 17, size: 4.8, font, color: rgb(0, 0, 0) });
-    page.drawText(`PAPER:${paperId}`.slice(0, 30), { x: qrX, y: qrY - 25, size: 4.8, font, color: rgb(0, 0, 0) });
+    page.drawText('QR SCHEMA: student|paper|test|page', { x: qrX, y: qrY - 9, size: 4.7, font: boldFont, color: rgb(0, 0, 0) });
+    page.drawText(payload.slice(0, 34), { x: qrX, y: qrY - 17, size: 4.5, font, color: rgb(0, 0, 0) });
+    page.drawText(payload.slice(34, 68), { x: qrX, y: qrY - 24, size: 4.5, font, color: rgb(0, 0, 0) });
 
     const templateQuestions: QuestionTemplateEntry[] = [];
     const left = 58;
@@ -414,6 +415,8 @@ export async function generateScanTemplatePaper({
     });
 
     allTemplates.push({
+      templateVersion: 'scan-template-v2',
+      qrSchema: 'studentId|paperId|testId|pageNumber',
       studentId,
       studentName: student.name,
       paperId,
@@ -440,6 +443,8 @@ export async function generateScanTemplatePaper({
   const templateFileName = fileName.replace(/\.pdf$/i, '.template.json');
   const templatePath = path.join(outputDir, templateFileName);
   fs.writeFileSync(templatePath, JSON.stringify({
+    templateVersion: 'scan-template-v2',
+    qrSchema: 'studentId|paperId|testId|pageNumber',
     generatedAt: new Date().toISOString(),
     testId,
     classNumber,
