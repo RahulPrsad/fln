@@ -1,11 +1,21 @@
 {
-  "name": "smartfln-dev5",
+  "name": "smartfln-platform",
   "private": true,
   "version": "0.1.0",
-  "description": "SmartFLN MVP and local TrOCR development launcher",
+  "description": "SmartFLN frontend, backend, and local TrOCR model service",
+  "workspaces": [
+    "frontend",
+    "backend"
+  ],
   "scripts": {
     "setup": "node scripts/dev.mjs --setup-only",
-    "dev": "node scripts/dev.mjs"
+    "dev": "node scripts/dev.mjs",
+    "dev:frontend": "npm run dev --workspace @fln/frontend",
+    "dev:backend": "npm run dev --workspace @fln/backend",
+    "build": "npm run build --workspace @fln/frontend && npm run build --workspace @fln/backend",
+    "build:frontend": "npm run build --workspace @fln/frontend",
+    "build:backend": "npm run build --workspace @fln/backend",
+    "lint": "npm run lint --workspaces --if-present"
   },
   "engines": {
     "node": ">=20"
