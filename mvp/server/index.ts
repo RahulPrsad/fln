@@ -5,12 +5,11 @@ import { dbStore, UserRole, User, Student, School, Question, Worksheet, AnswerSu
 import { generateAIDiagnostic, evaluateAIDiagnostic, generateAIPersonalizedWorksheet, evaluateAIWorksheet } from './gemini';
 import { generateDiagnosticPaper } from './paperGenerator';
 import { generateQuestionsForLevel } from './levelGenerator';
-import { fileURLToPath } from 'url';
 import { randomUUID } from 'crypto';
 import fs from 'fs';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const ROOT_DIR = path.resolve(__dirname, '..');
+const MODULE_DIR = path.dirname(path.resolve(process.argv[1] || path.join(process.cwd(), 'server', 'index.ts')));
+const ROOT_DIR = path.resolve(MODULE_DIR, '..');
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
 async function startServer() {
@@ -422,50 +421,29 @@ async function startServer() {
     const classMatch = student.classGroup.match(/\d+/);
     const classNumber = classMatch ? parseInt(classMatch[0], 10) : 1;
 
-    let questions: Question[];
-    let pdfUrl = '';
-    let templateUrl = '';
-
     try {
-      // Generate the official PDF worksheet paper via Puppeteer
       const result = await generateDiagnosticPaper({
         classNumber,
         students: [{ name: student.name, studentId: student.id }]
       });
-      questions = result.questions;
-      pdfUrl = `/output/${result.fileName}`;
-      templateUrl = result.templateUrl || '';
+      res.json({
+        student,
+        diagnosticPaper: {
+          id: 'diag_' + student.id + '_' + Date.now(),
+          studentId: student.id,
+          studentName: student.name,
+          questions: result.questions,
+          pdfUrl: `/output/${result.fileName}`,
+          templateUrl: result.templateUrl || ''
+        }
+      });
     } catch (err: any) {
-      console.error("Puppeteer paper generation failed, using level generator mock:", err);
-      const startLevel = (classNumber - 1) * 12 + 1;
-      questions = [];
-      for (let lvl = startLevel; lvl < startLevel + 8; lvl++) {
-        const lvlQuestions = generateQuestionsForLevel(Math.min(lvl, 59), 0);
-        lvlQuestions.forEach(q => {
-          questions.push({
-            ...q,
-            question_id: `DIAG_${lvl}_${q.question_id}`,
-            source_level: Math.min(lvl, 59)
-          });
-        });
-      }
-      questions = questions.slice(0, 12);
+      console.error('Database-backed diagnostic generation failed:', err);
+      res.status(500).json({ error: err?.message || 'Failed to generate SmartFLN diagnostic paper.' });
     }
-
-    res.json({
-      student,
-      diagnosticPaper: {
-        id: 'diag_' + student.id + '_' + Date.now(),
-        studentId: student.id,
-        studentName: student.name,
-        questions,
-        pdfUrl,
-        templateUrl
-      }
-    });
   });
 
-  // Generate multi-student PDF worksheet paper (Puppeteer pipeline)
+  // Generate multi-student SmartFLN papers from the persisted question bank.
   app.post('/api/paper/generate', async (req, res) => {
     const user = getAuthUser(req);
     if (!user) return res.status(401).json({ error: 'Unauthorized' });
@@ -489,6 +467,7 @@ async function startServer() {
         success: true,
         pdfUrl,
         templateUrl: result.templateUrl || '',
+        questions: result.questions,
         totalSets: result.totalSets,
         studentOrder: result.studentOrder
       });
@@ -863,6 +842,7 @@ async function startServer() {
     const studentsWithQuestions = classStudents.map(s => {
       const studentQuestions = ws.questions.filter(q => q.question_id.startsWith(s.id + '_'));
       return {
+        studentId: s.id,
         name: s.name,
         currentLevel: s.currentLevel,
         currentSubLevel: s.currentSubLevel || 0,
@@ -883,7 +863,7 @@ async function startServer() {
         cycle: ws.cycle,
         studentsWithQuestions
       });
-      res.json({ success: true, pdfUrl: result.pdfUrl });
+      res.json({ success: true, pdfUrl: result.pdfUrl, templateUrl: result.templateUrl || '' });
     } catch (err: any) {
       console.error('Worksheet PDF generation failed:', err);
       res.status(500).json({ success: false, error: err.message });
@@ -917,7 +897,7 @@ async function startServer() {
         subIdx: student.currentSubLevel || 0
       });
 
-      res.json({ success: true, pdfUrl: result.pdfUrl });
+      res.json({ success: true, pdfUrl: result.pdfUrl, templateUrl: result.templateUrl || '', questions: result.questions });
     } catch (err: any) {
       console.error('Level worksheet generation failed:', err);
       res.status(500).json({ success: false, error: err.message });
@@ -963,39 +943,14 @@ async function startServer() {
     return parsed;
   }
 
-  function latestTemplateForPaper(paperId: string) {
-    const outputDir = path.join(ROOT_DIR, 'output');
-    if (!fs.existsSync(outputDir)) return null;
-    const templateFiles = fs.readdirSync(outputDir)
-      .filter(name => name.endsWith('.template.json'))
-      .map(name => ({ name, fullPath: path.join(outputDir, name), mtime: fs.statSync(path.join(outputDir, name)).mtimeMs }))
-      .sort((a, b) => b.mtime - a.mtime);
-
-    for (const file of templateFiles) {
-      try {
-        const template = JSON.parse(fs.readFileSync(file.fullPath, 'utf-8'));
-        const paperTemplate = (template.papers || []).find((paper: any) => paper.paperId === paperId);
-        if (paperTemplate) return { file, template, paperTemplate };
-      } catch {
-        // Ignore malformed generated artifacts.
-      }
-    }
-    return null;
-  }
-
   function questionFromScanTemplate(q: any, student: Student): Question {
     const questionType = q.questionType || 'text';
-    const fallbackAnswers: Record<string, string> = {
-      text: '48',
-      multiple_choice: 'B',
-      match_pair: 'One-1, Three-3, Five-5',
-      fill_blank: '4'
-    };
     return {
       question_id: q.questionId,
       question: q.prompt || `${q.questionLabel} ${questionType.replace('_', ' ')}`,
-      answer: q.answerKey || fallbackAnswers[questionType] || '',
+      answer: q.answerKey || '',
       answer_type: q.answerType || (questionType === 'multiple_choice' ? 'choice' : 'text'),
+      question_format: questionType,
       choices: q.choices,
       topic: questionType,
       subtopic: 'scan-template',
@@ -1013,16 +968,20 @@ async function startServer() {
       return res.status(400).json({ error: 'QR must include student ID, paper ID, and test ID.', detectedQr: identity });
     }
 
-    const templateMatch = latestTemplateForPaper(identity.paperId);
-    if (!templateMatch) {
-      return res.status(404).json({ error: `No scan template JSON found for paper ${identity.paperId}. Generate the paper again from this MVP instance.` });
+    const pageNumber = identity.pageNumber || 1;
+    const paperTemplate = await dbStore.getScanPaperTemplate(identity.paperId, pageNumber);
+    if (!paperTemplate) {
+      return res.status(404).json({ error: `No database scan template found for paper ${identity.paperId}, page ${pageNumber}.` });
     }
 
     const students = await dbStore.getStudents();
     const student = students.find(s => s.id === identity.studentId);
     if (!student) return res.status(404).json({ error: `Student ${identity.studentId} was not found.` });
+    if (paperTemplate.studentId !== identity.studentId || paperTemplate.testId !== identity.testId) {
+      return res.status(409).json({ error: 'QR identity does not match the stored paper template.' });
+    }
 
-    const questions = (templateMatch.paperTemplate.questions || []).map((q: any) => questionFromScanTemplate(q, student));
+    const questions = paperTemplate.questions.map((q: any) => questionFromScanTemplate(q, student));
     res.json({
       detectedQr: {
         studentId: identity.studentId,
@@ -1036,12 +995,12 @@ async function startServer() {
         id: identity.paperId,
         testId: identity.testId,
         pageNumber: identity.pageNumber || 1,
-        page: templateMatch.paperTemplate.page,
-        templateVersion: templateMatch.paperTemplate.templateVersion || templateMatch.template.templateVersion,
-        qrSchema: templateMatch.paperTemplate.qrSchema || templateMatch.template.qrSchema,
-        questions: templateMatch.paperTemplate.questions || [],
+        page: paperTemplate.page,
+        templateVersion: paperTemplate.templateVersion,
+        qrSchema: paperTemplate.qrSchema,
+        questions: paperTemplate.questions,
         questionModels: questions,
-        templateUrl: `/output/${templateMatch.file.name}`
+        templateUrl: `/output/${paperTemplate.templateFileName}`
       }
     });
   });
@@ -1797,49 +1756,21 @@ async function startServer() {
       const classMatch = student.classGroup.match(/\d+/);
       const classNumber = classMatch ? parseInt(classMatch[0], 10) : 1;
 
-      let questions: Question[];
-      let pdfUrl = '';
-      let templateUrl = '';
-      let useMock = false;
-
-      try {
-        const result = await generateDiagnosticPaper({
-          classNumber,
-          students: [{ name: student.name, studentId: student.id }]
-        });
-        questions = result.questions;
-        pdfUrl = `/output/${result.fileName}`;
-        templateUrl = result.templateUrl || '';
-      } catch (err: any) {
-        console.error("Puppeteer paper generation failed, using generateQuestionsForLevel mock:", err);
-        useMock = true;
-        // Generate questions across multiple levels using the level generator
-        const startLevel = (classNumber - 1) * 12 + 1;
-        questions = [];
-        for (let lvl = startLevel; lvl < startLevel + 8; lvl++) {
-          const lvlQuestions = generateQuestionsForLevel(Math.min(lvl, 59), 0);
-          lvlQuestions.forEach(q => {
-            questions.push({
-              ...q,
-              question_id: `DIAG_${lvl}_${q.question_id}`,
-              source_level: Math.min(lvl, 59)
-            });
-          });
-        }
-        // Limit to 12 questions for a reasonable diagnostic
-        questions = questions.slice(0, 12);
-      }
+      const result = await generateDiagnosticPaper({
+        classNumber,
+        students: [{ name: student.name, studentId: student.id }]
+      });
 
       res.json({
         student,
-        mockMode: useMock,
+        mockMode: false,
         diagnosticPaper: {
           id: 'diag_' + student.id + '_' + Date.now(),
           studentId: student.id,
           studentName: student.name,
-          questions,
-          pdfUrl,
-          templateUrl
+          questions: result.questions,
+          pdfUrl: `/output/${result.fileName}`,
+          templateUrl: result.templateUrl || ''
         }
       });
     } catch (err: any) {
