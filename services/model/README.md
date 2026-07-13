@@ -43,7 +43,7 @@ uploaded scanned image
   -> QR read or supplied qrText
   -> student_id, paper_id, test_id extraction
   -> strict paper validation: QR identity, known template, four corner markers
-  -> perspective correction or safe resize fallback
+  -> mandatory four-fiducial perspective correction
   -> A4 template coordinate normalization
   -> answer-box ROI crop per question
   -> ROI preprocessing
@@ -61,6 +61,9 @@ Full-page OCR is gated by SmartFLN paper validation. A page is rejected with
 - one readable QR payload with `student_id`, `paper_id`, and `test_id`
 - a matching template JSON for the QR `paper_id`
 - four detected black page-corner markers
+
+There is no full-image or resize fallback in the MVP production scan flow.
+Missing or invalid fiducials reject the scan before ROI cropping or OCR.
 
 Manual `student_id`, `paper_id`, and `test_id` request fields do not make a
 full-page scan valid. They are metadata only; identity must come from the QR.
