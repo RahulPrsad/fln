@@ -3,15 +3,36 @@ import path from 'path';
 import { randomUUID } from 'crypto';
 import QRCode from 'qrcode';
 import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
-import { Question, ScanPaperTemplate, ScanRoiRect, ScanTemplateQuestion } from './db';
+import { Question } from './db';
 
 export interface ScanTemplateStudent {
   name: string;
   studentId?: string;
-  questions: Question[];
 }
 
-function toTopLeftRect(pageHeight: number, x: number, y: number, width: number, height: number): ScanRoiRect {
+interface RoiRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+interface QuestionTemplateEntry {
+  questionId: string;
+  questionLabel: string;
+  questionType: 'text' | 'multiple_choice' | 'match_pair' | 'fill_blank';
+  prompt: string;
+  answerKey: string;
+  answerType: Question['answer_type'];
+  choices?: string[];
+  marks: number;
+  autoScoreEligible: boolean;
+  questionBox: RoiRect;
+  answerBoxes: RoiRect[];
+  anchor: RoiRect;
+}
+
+function toTopLeftRect(pageHeight: number, x: number, y: number, width: number, height: number): RoiRect {
   return {
     x: Math.round(x * 100) / 100,
     y: Math.round((pageHeight - y - height) * 100) / 100,
@@ -37,13 +58,50 @@ function wrapText(text: string, maxChars: number) {
   return lines;
 }
 
-function classifyQuestion(question: Question): ScanTemplateQuestion['questionType'] {
-  if (question.question_format) return question.question_format;
-  const description = `${question.question} ${question.topic} ${question.subtopic}`.toLowerCase();
-  if (/\bmatch(?:ing)?\b|\bpair\b/.test(description)) return 'match_pair';
-  if (question.answer_type === 'choice' || (question.choices?.length || 0) > 1) return 'multiple_choice';
-  if (question.answer_type === 'number' || /_{2,}|fill\s+in\s+the\s+blank/.test(description)) return 'fill_blank';
-  return 'text';
+function buildQuestions(classNumber: number, studentId: string): Question[] {
+  return [
+    {
+      question_id: `${studentId}_Q1_TEXT`,
+      question: 'Read the number 47. Write the number that comes just after it.',
+      answer: '48',
+      answer_type: 'number',
+      topic: 'Number Sense',
+      subtopic: 'sequence',
+      difficulty: 'easy',
+      source_level: classNumber * 10
+    },
+    {
+      question_id: `${studentId}_Q2_MCQ`,
+      question: 'Which option shows an even number?',
+      answer: 'B',
+      answer_type: 'choice',
+      choices: ['A. 13', 'B. 18', 'C. 21', 'D. 25'],
+      topic: 'Number Sense',
+      subtopic: 'odd_even',
+      difficulty: 'easy',
+      source_level: classNumber * 10
+    },
+    {
+      question_id: `${studentId}_Q3_MATCH`,
+      question: 'Match the number name with the correct numeral: One, Three, Five.',
+      answer: 'One-1, Three-3, Five-5',
+      answer_type: 'text',
+      topic: 'Number Sense',
+      subtopic: 'matching',
+      difficulty: 'medium',
+      source_level: classNumber * 10
+    },
+    {
+      question_id: `${studentId}_Q4_FILL`,
+      question: 'Fill in the blank: 6 + ___ = 10',
+      answer: '4',
+      answer_type: 'number',
+      topic: 'Operations',
+      subtopic: 'addition',
+      difficulty: 'medium',
+      source_level: classNumber * 10
+    }
+  ];
 }
 
 export async function generateScanTemplatePaper({
@@ -63,17 +121,13 @@ export async function generateScanTemplatePaper({
   const pageWidth = 595.28;
   const pageHeight = 841.89;
   const testId = `TEST-DIAG-C${classNumber}`;
-  const fileName = `class${classNumber}_scan_template_${randomUUID()}.pdf`;
-  const templateFileName = fileName.replace(/\.pdf$/i, '.template.json');
-  const generatedAt = new Date().toISOString();
-  const allTemplates: ScanPaperTemplate[] = [];
+  const allTemplates: any[] = [];
   let firstQuestions: Question[] = [];
 
   for (const [studentIndex, student] of students.entries()) {
     const studentId = student.studentId || `STUDENT_${studentIndex + 1}`;
     const paperId = `P${classNumber}-${Date.now().toString(36)}-${studentIndex + 1}`;
-    const questions = student.questions.slice(0, 4);
-    if (questions.length === 0) throw new Error(`No database questions were selected for student ${studentId}.`);
+    const questions = buildQuestions(classNumber, studentId);
     if (studentIndex === 0) firstQuestions = questions;
 
     const page = pdf.addPage([pageWidth, pageHeight]);
@@ -111,7 +165,7 @@ export async function generateScanTemplatePaper({
     page.drawText(payload.slice(0, 34), { x: qrX, y: qrY - 17, size: 4.5, font, color: rgb(0, 0, 0) });
     page.drawText(payload.slice(34, 68), { x: qrX, y: qrY - 24, size: 4.5, font, color: rgb(0, 0, 0) });
 
-    const templateQuestions: ScanTemplateQuestion[] = [];
+    const templateQuestions: QuestionTemplateEntry[] = [];
     const left = 58;
     const boxWidth = pageWidth - 116;
     const boxHeight = 116;
@@ -123,34 +177,36 @@ export async function generateScanTemplatePaper({
       const boxY = topY - boxHeight;
       const anchorX = left - 20;
       const anchorY = topY - 16;
-      const answerBoxes: ScanRoiRect[] = [];
-      const questionType = classifyQuestion(q);
+      const answerBoxes: RoiRect[] = [];
+      const questionType: QuestionTemplateEntry['questionType'] =
+        idx === 1 ? 'multiple_choice' : idx === 2 ? 'match_pair' : idx === 3 ? 'fill_blank' : 'text';
 
       page.drawRectangle({ x: anchorX, y: anchorY, width: 10, height: 10, color: rgb(0, 0, 0) });
       page.drawText(label, { x: anchorX - 1, y: anchorY - 13, size: 8, font: boldFont, color: rgb(0, 0, 0) });
       page.drawRectangle({ x: left, y: boxY, width: boxWidth, height: boxHeight, color: rgb(1, 1, 1), borderColor: rgb(0, 0, 0), borderWidth: 1.2 });
       page.drawText(`${label}. ${q.topic}`, { x: left + 12, y: topY - 20, size: 9, font: boldFont, color: rgb(0, 0, 0) });
-      wrapText(q.question, 90).slice(0, 3).forEach((line, lineIndex) => {
-        page.drawText(line, { x: left + 12, y: topY - 36 - lineIndex * 10, size: 8, font, color: rgb(0, 0, 0) });
+      wrapText(q.question, 78).slice(0, 2).forEach((line, lineIndex) => {
+        page.drawText(line, { x: left + 12, y: topY - 38 - lineIndex * 12, size: 9, font, color: rgb(0, 0, 0) });
       });
 
       if (questionType === 'multiple_choice') {
         q.choices?.forEach((choice, choiceIndex) => {
           const optionX = left + 18 + (choiceIndex % 2) * 190;
-          const optionY = boxY + 30 - Math.floor(choiceIndex / 2) * 21;
+          const optionY = boxY + 35 - Math.floor(choiceIndex / 2) * 24;
           page.drawEllipse({ x: optionX, y: optionY + 2, xScale: 5, yScale: 5, borderColor: rgb(0, 0, 0), borderWidth: 1 });
-          page.drawText(`${String.fromCharCode(65 + choiceIndex)}. ${choice}`, { x: optionX + 14, y: optionY, size: 8, font, color: rgb(0, 0, 0) });
+          page.drawText(choice, { x: optionX + 14, y: optionY, size: 9, font, color: rgb(0, 0, 0) });
           answerBoxes.push(toTopLeftRect(pageHeight, optionX - 6, optionY - 4, 120, 18));
         });
       } else if (questionType === 'match_pair') {
-        const pairs = (q.choices || []).map(choice => choice.split(/\s*(?:=>|=|:|-|\u2013)\s*/, 2)).filter(parts => parts.length === 2).slice(0, 3);
-        pairs.forEach((pair, itemIndex) => {
-          const rowY = boxY + 48 - itemIndex * 16;
-          page.drawText(`${String.fromCharCode(65 + itemIndex)}. ${pair[0]}`, { x: left + 24, y: rowY, size: 8, font, color: rgb(0, 0, 0) });
-          page.drawText(`${itemIndex + 1}. ${pair[1]}`, { x: left + 312, y: rowY, size: 8, font, color: rgb(0, 0, 0) });
+        const leftItems = ['One', 'Three', 'Five'];
+        const rightItems = ['1', '3', '5'];
+        leftItems.forEach((item, itemIndex) => {
+          const rowY = boxY + 52 - itemIndex * 20;
+          page.drawText(`${String.fromCharCode(65 + itemIndex)}. ${item}`, { x: left + 24, y: rowY, size: 9, font, color: rgb(0, 0, 0) });
+          page.drawText(`${itemIndex + 1}. ${rightItems[itemIndex]}`, { x: left + 312, y: rowY, size: 9, font, color: rgb(0, 0, 0) });
         });
         const answerX = left + 150;
-        const answerY = boxY + 12;
+        const answerY = boxY + 18;
         page.drawRectangle({ x: answerX, y: answerY, width: 150, height: 26, borderColor: rgb(0, 0, 0), borderWidth: 1 });
         page.drawText('Write pairs here', { x: answerX + 8, y: answerY + 9, size: 7, font, color: rgb(0.35, 0.35, 0.35) });
         answerBoxes.push(toTopLeftRect(pageHeight, answerX, answerY, 150, 26));
@@ -205,23 +261,22 @@ export async function generateScanTemplatePaper({
         bottomLeft: toTopLeftRect(pageHeight, fiducialInset, fiducialInset, fiducialSize, fiducialSize),
         bottomRight: toTopLeftRect(pageHeight, pageWidth - fiducialInset - fiducialSize, fiducialInset, fiducialSize, fiducialSize)
       },
-      questions: templateQuestions,
-      generatedAt,
-      pdfFileName: fileName,
-      templateFileName
+      questions: templateQuestions
     });
 
     if (onProgress) onProgress(studentIndex + 1, students.length);
   }
 
+  const fileName = `class${classNumber}_scan_template_${randomUUID()}.pdf`;
   const filePath = path.join(outputDir, fileName);
   fs.writeFileSync(filePath, Buffer.from(await pdf.save()));
 
+  const templateFileName = fileName.replace(/\.pdf$/i, '.template.json');
   const templatePath = path.join(outputDir, templateFileName);
   fs.writeFileSync(templatePath, JSON.stringify({
     templateVersion: 'scan-template-v2',
     qrSchema: 'studentId|paperId|testId|pageNumber',
-    generatedAt,
+    generatedAt: new Date().toISOString(),
     testId,
     classNumber,
     totalPapers: students.length,
@@ -236,7 +291,6 @@ export async function generateScanTemplatePaper({
     questions: firstQuestions,
     templateFileName,
     templatePath,
-    templateUrl: `/output/${templateFileName}`,
-    paperTemplates: allTemplates
+    templateUrl: `/output/${templateFileName}`
   };
 }

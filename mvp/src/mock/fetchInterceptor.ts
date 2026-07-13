@@ -413,16 +413,17 @@ export function setupFetchInterceptor() {
         const classMatch = student.classGroup.match(/\d+/);
         const classNum = classMatch ? parseInt(classMatch[0], 10) : 1;
 
-        const generatedResponse = await originalFetch('/api/paper/generate', {
-          method: 'POST',
-          headers: init?.headers,
-          body: JSON.stringify({
-            class: classNum,
-            students: [{ name: student.name, studentId: student.id }]
-          })
+        // Generate baseline questions matching their initial class
+        const mockQuestions: Question[] = [];
+        // Grab Level questions matching the class range:
+        // Class 1 -> Levels 1, 2, 3
+        // Class 2 -> Levels 1, 2, 3, 24
+        // Class 3 -> Levels 2, 3, 36
+        // Class 4 -> Levels 3, 4, 49
+        const levelsToLoad = classNum === 1 ? [1, 2, 3] : classNum === 2 ? [1, 2, 3, 24] : classNum === 3 ? [2, 3, 36] : [3, 4, 49];
+        levelsToLoad.forEach(l => {
+          mockQuestions.push(...generateQuestionsForLevel(l, 0).slice(0, 1));
         });
-        if (!generatedResponse.ok) return generatedResponse;
-        const generated = await generatedResponse.json();
 
         return jsonResponse({
           student,
@@ -430,9 +431,8 @@ export function setupFetchInterceptor() {
             id: 'diag_' + student.id + '_' + Date.now(),
             studentId: student.id,
             studentName: student.name,
-            questions: generated.questions || [],
-            pdfUrl: generated.pdfUrl,
-            templateUrl: generated.templateUrl || ''
+            questions: mockQuestions,
+            pdfUrl: ''
           }
         });
       }
