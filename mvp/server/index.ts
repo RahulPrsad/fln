@@ -1,7 +1,7 @@
 import express from 'express';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
-import { dbStore, UserRole, User, Student, School, Question, Worksheet, AnswerSubmission, EvaluationReport, Ticket, LogEntry, Announcement } from './db';
+import { dbStore, UserRole, User, Student, School, Question, Worksheet, AnswerSubmission, EvaluationReport, Ticket, LogEntry, Announcement, ScanPaperTemplate } from './db';
 import { generateAIDiagnostic, evaluateAIDiagnostic, generateAIPersonalizedWorksheet, evaluateAIWorksheet } from './gemini';
 import { generateDiagnosticPaper } from './paperGenerator';
 import { generateQuestionsForLevel } from './levelGenerator';
@@ -959,27 +959,82 @@ async function startServer() {
     };
   }
 
-  app.post('/api/ocr/scan/template', async (req, res) => {
-    const user = getAuthUser(req);
-    if (!user) return res.status(401).json({ error: 'Unauthorized' });
+  function modelQuestionType(questionType: string) {
+    if (questionType === 'fill_blank') return 'numeric';
+    if (questionType === 'multiple_choice') return 'mcq';
+    if (questionType === 'match_pair') return 'matching';
+    return 'short_text';
+  }
 
-    const identity = parseScanQrPayload(req.body?.qrText || '');
+  function toModelTemplate(template: ScanPaperTemplate) {
+    const modelPage = { width: 2480, height: 3508 };
+    const scaleX = modelPage.width / template.page.width;
+    const scaleY = modelPage.height / template.page.height;
+    const scaleRoi = (roi: { x: number; y: number; width: number; height: number }) => ({
+      x: Math.round(roi.x * scaleX),
+      y: Math.round(roi.y * scaleY),
+      width: Math.max(1, Math.round(roi.width * scaleX)),
+      height: Math.max(1, Math.round(roi.height * scaleY))
+    });
+    const topLeftMarker = template.fiducials.topLeft;
+
+    return {
+      paper_id: template.paperId,
+      test_id: template.testId,
+      answer_key_id: `${template.testId}:answer-key`,
+      box_markers_required: false,
+      page: {
+        ...modelPage,
+        marker_center_inset_x: Math.round((topLeftMarker.x + topLeftMarker.width / 2) * scaleX),
+        marker_center_inset_y: Math.round((topLeftMarker.y + topLeftMarker.height / 2) * scaleY)
+      },
+      questions: template.questions.map(question => {
+        const textBased = question.questionType === 'text' || question.questionType === 'fill_blank';
+        const selectedRoi = textBased ? question.answerBoxes[0] : question.questionBox;
+        if (!selectedRoi) throw new Error(`Question ${question.questionId} does not contain a scan ROI.`);
+        return {
+          question_id: question.questionId,
+          label: question.questionLabel,
+          type: modelQuestionType(question.questionType),
+          source_question_type: question.questionType,
+          prompt: question.prompt,
+          answer_key: question.answerKey,
+          marks: question.marks,
+          roi: scaleRoi(selectedRoi),
+          auto_score: textBased && question.autoScoreEligible
+        };
+      })
+    };
+  }
+
+  async function scanContext(qrText: string) {
+    const identity = parseScanQrPayload(qrText);
     if (!identity.studentId || !identity.paperId || !identity.testId) {
-      return res.status(400).json({ error: 'QR must include student ID, paper ID, and test ID.', detectedQr: identity });
+      return { error: 'QR must include student ID, paper ID, and test ID.', status: 400, identity } as const;
     }
 
     const pageNumber = identity.pageNumber || 1;
     const paperTemplate = await dbStore.getScanPaperTemplate(identity.paperId, pageNumber);
     if (!paperTemplate) {
-      return res.status(404).json({ error: `No database scan template found for paper ${identity.paperId}, page ${pageNumber}.` });
+      return { error: `No database scan template found for paper ${identity.paperId}, page ${pageNumber}.`, status: 404, identity } as const;
+    }
+    if (paperTemplate.studentId !== identity.studentId || paperTemplate.testId !== identity.testId) {
+      return { error: 'QR identity does not match the stored paper template.', status: 409, identity } as const;
     }
 
     const students = await dbStore.getStudents();
-    const student = students.find(s => s.id === identity.studentId);
-    if (!student) return res.status(404).json({ error: `Student ${identity.studentId} was not found.` });
-    if (paperTemplate.studentId !== identity.studentId || paperTemplate.testId !== identity.testId) {
-      return res.status(409).json({ error: 'QR identity does not match the stored paper template.' });
-    }
+    const student = students.find(item => item.id === identity.studentId);
+    if (!student) return { error: `Student ${identity.studentId} was not found.`, status: 404, identity } as const;
+    return { identity, paperTemplate, student } as const;
+  }
+
+  app.post('/api/ocr/scan/template', async (req, res) => {
+    const user = getAuthUser(req);
+    if (!user) return res.status(401).json({ error: 'Unauthorized' });
+
+    const context = await scanContext(req.body?.qrText || '');
+    if ('error' in context) return res.status(context.status).json({ error: context.error, detectedQr: context.identity });
+    const { identity, paperTemplate, student } = context;
 
     const questions = paperTemplate.questions.map((q: any) => questionFromScanTemplate(q, student));
     res.json({
@@ -1003,6 +1058,72 @@ async function startServer() {
         templateUrl: `/output/${paperTemplate.templateFileName}`
       }
     });
+  });
+
+  app.post('/api/ocr/scan/process', async (req, res) => {
+    const user = getAuthUser(req);
+    if (!user) return res.status(401).json({ error: 'Unauthorized' });
+
+    const { qrText, imageDataUrl } = req.body || {};
+    if (!qrText || !imageDataUrl) return res.status(400).json({ error: 'qrText and imageDataUrl are required.' });
+
+    const context = await scanContext(qrText);
+    if ('error' in context) return res.status(context.status).json({ error: context.error, detectedQr: context.identity });
+    const { identity, paperTemplate, student } = context;
+    const serviceUrl = process.env.SMARTFLN_MODEL_SERVICE_URL || process.env.SMARTFLN_TROCR_URL || process.env.TROCR_SERVICE_URL || '';
+    if (!serviceUrl) {
+      return res.status(503).json({ error: 'The full-page model service is not configured. Set SMARTFLN_MODEL_SERVICE_URL.' });
+    }
+
+    try {
+      const inferUrl = serviceUrl.endsWith('/v1/infer') ? serviceUrl : `${serviceUrl.replace(/\/$/, '')}/v1/infer`;
+      const modelResponse = await fetch(inferUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: AbortSignal.timeout(Number(process.env.SMARTFLN_MODEL_TIMEOUT_MS || 120000)),
+        body: JSON.stringify({
+          scanPageId: `scan_${identity.paperId}_${Date.now()}`,
+          imageDataUrl,
+          template: toModelTemplate(paperTemplate)
+        })
+      });
+      const modelScan: any = await modelResponse.json().catch(() => ({}));
+      if (!modelResponse.ok) {
+        return res.status(502).json({ error: modelScan.error || modelScan.message || `Model service returned HTTP ${modelResponse.status}.` });
+      }
+      if (!modelScan.valid_paper || modelScan.ocr_started === false) {
+        return res.status(422).json({
+          error: modelScan.message || 'Scan rejected. A valid QR and all four corner fiducials are required.',
+          invalidReason: modelScan.invalid_reason,
+          validation: modelScan.validation,
+          page: modelScan.page
+        });
+      }
+
+      res.json({
+        detectedQr: {
+          studentId: identity.studentId,
+          paperId: identity.paperId,
+          testId: identity.testId,
+          pageNumber: identity.pageNumber || 1,
+          raw: identity.raw
+        },
+        student,
+        paper: {
+          id: paperTemplate.paperId,
+          testId: paperTemplate.testId,
+          pageNumber: paperTemplate.pageNumber,
+          page: paperTemplate.page,
+          templateVersion: paperTemplate.templateVersion,
+          qrSchema: paperTemplate.qrSchema,
+          questions: paperTemplate.questions,
+          templateUrl: `/output/${paperTemplate.templateFileName}`
+        },
+        modelScan
+      });
+    } catch (error: any) {
+      res.status(502).json({ error: error.message || 'The full-page model service is unreachable.' });
+    }
   });
 
   app.post('/api/ocr/trocr', async (req, res) => {

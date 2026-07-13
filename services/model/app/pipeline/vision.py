@@ -187,7 +187,8 @@ def detect_page_markers(image: Image.Image) -> dict[str, Any]:
     """Detect four corner markers when OpenCV is installed."""
 
     if not _CV2_AVAILABLE:
-        return _detect_page_markers_pillow(image) or _fallback_markers(image)
+        detected = _detect_page_markers_pillow(image)
+        return detected or {**_fallback_markers(image), "confidence": 0.0, "status": "markers_not_found"}
 
     try:  # pragma: no cover - cv2 is optional in the local test runtime
         import cv2
@@ -196,7 +197,7 @@ def detect_page_markers(image: Image.Image) -> dict[str, Any]:
         cv_image = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2GRAY)
         blurred = cv2.GaussianBlur(cv_image, (5, 5), 0)
         _, threshold = cv2.threshold(blurred, 70, 255, cv2.THRESH_BINARY_INV)
-        contours, _ = cv2.findContours(threshold, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        contours, _ = cv2.findContours(threshold, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
 
         candidates = []
         page_area = image.width * image.height
@@ -206,17 +207,41 @@ def detect_page_markers(image: Image.Image) -> dict[str, Any]:
                 continue
             x, y, width, height = cv2.boundingRect(contour)
             aspect = width / max(1, height)
-            if 0.45 <= aspect <= 2.2:
+            fill_ratio = area / max(1, width * height)
+            if 0.72 <= aspect <= 1.38 and fill_ratio >= 0.65:
                 candidates.append({"x": x + width / 2, "y": y + height / 2, "area": area})
 
         if len(candidates) < 4:
-            return _detect_page_markers_pillow(image) or {**_fallback_markers(image), "status": "markers_not_found"}
+            return {
+                **_fallback_markers(image),
+                "confidence": 0.0,
+                "status": "markers_not_found",
+                "provider": "opencv.contours",
+                "candidateCount": len(candidates),
+            }
 
+        zone_x = image.width * 0.25
+        zone_y = image.height * 0.20
+        corner_candidates = {
+            "tl": [point for point in candidates if point["x"] <= zone_x and point["y"] <= zone_y],
+            "tr": [point for point in candidates if point["x"] >= image.width - zone_x and point["y"] <= zone_y],
+            "br": [point for point in candidates if point["x"] >= image.width - zone_x and point["y"] >= image.height - zone_y],
+            "bl": [point for point in candidates if point["x"] <= zone_x and point["y"] >= image.height - zone_y],
+        }
+        if any(not points for points in corner_candidates.values()):
+            return {
+                **_fallback_markers(image),
+                "confidence": 0.0,
+                "status": "markers_not_found",
+                "provider": "opencv.contours",
+                "candidateCount": len(candidates),
+                "missingCorners": [name for name, points in corner_candidates.items() if not points],
+            }
         corners = {
-            "tl": min(candidates, key=lambda point: point["x"] + point["y"]),
-            "tr": min(candidates, key=lambda point: (image.width - point["x"]) + point["y"]),
-            "br": min(candidates, key=lambda point: (image.width - point["x"]) + (image.height - point["y"])),
-            "bl": min(candidates, key=lambda point: point["x"] + (image.height - point["y"])),
+            "tl": min(corner_candidates["tl"], key=lambda point: point["x"] + point["y"]),
+            "tr": min(corner_candidates["tr"], key=lambda point: (image.width - point["x"]) + point["y"]),
+            "br": min(corner_candidates["br"], key=lambda point: (image.width - point["x"]) + (image.height - point["y"])),
+            "bl": min(corner_candidates["bl"], key=lambda point: point["x"] + (image.height - point["y"])),
         }
         ordered = [corners["tl"], corners["tr"], corners["br"], corners["bl"]]
         return {
@@ -227,7 +252,7 @@ def detect_page_markers(image: Image.Image) -> dict[str, Any]:
             "candidateCount": len(candidates),
         }
     except Exception as error:
-        return {**_fallback_markers(image), "status": "error", "error": str(error)}
+        return {**_fallback_markers(image), "confidence": 0.0, "status": "error", "error": str(error)}
 
 
 def align_page(image: Image.Image, marker_result: dict[str, Any], page_size: dict[str, int] | None = None) -> dict[str, Any]:
@@ -252,7 +277,19 @@ def align_page(image: Image.Image, marker_result: dict[str, Any], page_size: dic
         import numpy as np
 
         source = np.float32([[point["x"], point["y"]] for point in marker_result["markers"]])
-        target = np.float32([[0, 0], [width - 1, 0], [width - 1, height - 1], [0, height - 1]])
+        configured_inset_x = int(page_size.get("marker_center_inset_x", 0))
+        configured_inset_y = int(page_size.get("marker_center_inset_y", 0))
+        source_points = marker_result["markers"]
+        inferred_inset_x = round(((source_points[0]["x"] + (image.width - 1 - source_points[1]["x"])) / 2) * width / image.width)
+        inferred_inset_y = round(((source_points[0]["y"] + (image.height - 1 - source_points[3]["y"])) / 2) * height / image.height)
+        inset_x = max(0, min(width // 4, configured_inset_x or inferred_inset_x))
+        inset_y = max(0, min(height // 4, configured_inset_y or inferred_inset_y))
+        target = np.float32([
+            [inset_x, inset_y],
+            [width - 1 - inset_x, inset_y],
+            [width - 1 - inset_x, height - 1 - inset_y],
+            [inset_x, height - 1 - inset_y],
+        ])
         transform = cv2.getPerspectiveTransform(source, target)
         warped = cv2.warpPerspective(np.array(image), transform, (width, height))
         aligned = Image.fromarray(warped).convert("RGB")

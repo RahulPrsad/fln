@@ -213,14 +213,12 @@ export async function generateScanTemplatePaper({
           const answerX = left + 150;
           const answerY = boxY + 14;
           page.drawRectangle({ x: answerX, y: answerY, width: 160, height: 24, borderColor: rgb(0, 0, 0), borderWidth: 1 });
-          page.drawText('Write matching pairs', { x: answerX + 8, y: answerY + 8, size: 6.5, font, color: rgb(0.35, 0.35, 0.35) });
           answerBoxes.push(toTopLeftRect(pageHeight, answerX, answerY, 160, 24));
         } else {
           const answerX = left + 18;
           const answerY = boxY + 20;
           const answerWidth = questionType === 'fill_blank' ? 150 : boxWidth - 36;
           page.drawRectangle({ x: answerX, y: answerY, width: answerWidth, height: 28, borderColor: rgb(0, 0, 0), borderWidth: 1 });
-          page.drawText('Answer', { x: answerX + 8, y: answerY + 10, size: 7, font, color: rgb(0.35, 0.35, 0.35) });
           answerBoxes.push(toTopLeftRect(pageHeight, answerX, answerY, answerWidth, 28));
         }
 

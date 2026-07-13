@@ -16,7 +16,7 @@ from .scoring import score_answer
 from .templates import TemplateError, load_template
 from .vision import align_page, detect_page_markers, parse_qr_payload, read_qr_text
 
-VALID_MARKER_STATUSES = {"detected", "detected_pillow"}
+VALID_MARKER_STATUSES = {"detected"}
 
 
 def _crop_preview_data_url(crop) -> str:
@@ -61,6 +61,20 @@ def _marker_missing_recognition(marker: dict[str, Any]) -> dict[str, Any]:
         "diagnostics": {
             "summary": "Expected answer-box identification marker was not detected, so OCR was skipped for this ROI.",
             "boxMarker": marker,
+        },
+    }
+
+
+def _manual_visual_recognition() -> dict[str, Any]:
+    return {
+        "recognizedAnswer": "",
+        "confidence": 0.0,
+        "modelName": "manual-visual-review",
+        "modelVersion": MODEL_VERSION,
+        "providerStatus": "manual_visual_review",
+        "diagnostics": {
+            "engine": "visual-review",
+            "summary": "The full perspective-corrected question box was cropped for volunteer review.",
         },
     }
 
@@ -271,6 +285,17 @@ def infer_full_scan(payload: dict[str, Any]) -> dict[str, Any]:
         )
 
     alignment = align_page(image, markers, template.get("page"))
+    if not alignment.get("perspectiveCorrected"):
+        return _invalid_paper_response(
+            scan_id,
+            "perspective_correction_failed",
+            page_quality,
+            qr_result,
+            qr_identity,
+            markers,
+            checks,
+            "Scan rejected. The four fiducials were found, but perspective correction could not be completed.",
+        )
     aligned_page = alignment["image"]
 
     answers = []
@@ -282,17 +307,31 @@ def infer_full_scan(payload: dict[str, Any]) -> dict[str, Any]:
         box_marker = detect_answer_box_marker(aligned_page, question["roi"], question.get("label"))
         crop, normalized_roi = crop_answer_roi(aligned_page, question["roi"])
         crop_metrics = roi_quality(crop)
-        if template.get("box_markers_required") and not box_marker["detected"]:
+        if not question.get("auto_score", True):
+            recognition = _manual_visual_recognition()
+            scoring = {
+                "awardedMarks": 0.0,
+                "maxMarks": float(question.get("marks") or 1),
+                "confidence": 0.0,
+                "confidenceBand": "very_low",
+                "needsReview": True,
+                "status": "needs_review",
+                "isCorrect": False,
+                "matchScore": 0.0,
+                "normalizedAnswer": "",
+                "normalizedKey": str(question.get("answer_key") or ""),
+            }
+        elif template.get("box_markers_required") and not box_marker["detected"]:
             recognition = _marker_missing_recognition(box_marker)
+            scoring = score_answer(
+                question, recognition["recognizedAnswer"], recognition["confidence"], crop_metrics["quality"]
+            )
         else:
             processed_roi = preprocess_roi(crop)
             recognition = recognize_answer(processed_roi, question)
-        scoring = score_answer(
-            question,
-            recognition["recognizedAnswer"],
-            recognition["confidence"],
-            crop_metrics["quality"],
-        )
+            scoring = score_answer(
+                question, recognition["recognizedAnswer"], recognition["confidence"], crop_metrics["quality"]
+            )
         total_marks += scoring["maxMarks"]
         awarded_marks += scoring["awardedMarks"]
         review_count += 1 if scoring["needsReview"] else 0
