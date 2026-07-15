@@ -12,12 +12,16 @@
     "dev": "node scripts/dev.mjs",
     "dev:frontend": "npm run dev --workspace @fln/frontend",
     "dev:backend": "npm run dev --workspace @fln/backend",
-    "build": "npm run build --workspace @fln/frontend && npm run build --workspace @fln/backend",
+    "build": "npm run build:frontend && npm run build:backend",
     "build:frontend": "npm run build --workspace @fln/frontend",
     "build:backend": "npm run build --workspace @fln/backend",
+    "start": "npm run start --workspace @fln/backend",
     "lint": "npm run lint --workspaces --if-present"
   },
   "engines": {
     "node": ">=20"
+  },
+  "dependencies": {
+    "mongodb": "^7.5.0"
   }
 }
