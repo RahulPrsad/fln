@@ -26,6 +26,7 @@ export interface User {
   blockCode?: string;
   schoolId?: string;
   assignedSchools?: string[]; // for Volunteers
+  phoneNumber?: string;
   delayedAttemptsCount?: number;
   isBanned?: boolean;
 }
@@ -128,6 +129,21 @@ export interface ScanPaperTemplate {
   generatedAt: string;
   pdfFileName: string;
   templateFileName: string;
+}
+
+export interface LevelWorksheet {
+  id: string;
+  batchId: string;
+  studentId: string;
+  studentName: string;
+  rollNumber: string;
+  levelId: number;
+  sublevelId: string;
+  setNum: number;
+  pdfUrl: string;
+  answerKey: unknown;
+  coords: unknown;
+  generatedAt: string;
 }
 
 export interface Worksheet {
@@ -280,6 +296,7 @@ interface DatabaseSchema {
   questions: Question[];
   scanPaperTemplates: ScanPaperTemplate[];
   worksheets: Worksheet[];
+  levelWorksheets: LevelWorksheet[];
   answerSubmissions: AnswerSubmission[];
   evaluationReports: EvaluationReport[];
   tickets: Ticket[];
@@ -294,6 +311,10 @@ export class DBStore {
   private saveQueue: Promise<void> = Promise.resolve();
   public useMongo = false;
   private mongoDb: Db | null = null;
+
+  getDb() {
+    return this.mongoDb;
+  }
 
   async init() {
     const mongoUri = process.env.MONGO_URI?.trim();
@@ -389,6 +410,10 @@ export class DBStore {
         this.data.scanPaperTemplates = [];
         modified = true;
       }
+      if (!this.data.levelWorksheets) {
+        this.data.levelWorksheets = [];
+        modified = true;
+      }
       if (!this.data.interventions) {
         this.data.interventions = [];
         modified = true;
@@ -464,6 +489,7 @@ export class DBStore {
     return this.data!.scanPaperTemplates.find(template => template.paperId === paperId && template.pageNumber === pageNumber);
   }
   async getWorksheets() { return this.data!.worksheets; }
+  async getLevelWorksheets() { return this.data!.levelWorksheets; }
   async getAnswerSubmissions() { return this.data!.answerSubmissions; }
   async getEvaluationReports() { return this.data!.evaluationReports; }
   async getTickets() { return this.data!.tickets; }
@@ -523,6 +549,12 @@ export class DBStore {
       Object.assign(ws, updates);
       await this.save();
     }
+    return ws;
+  }
+
+  async addLevelWorksheet(ws: LevelWorksheet) {
+    this.data!.levelWorksheets.push(ws);
+    await this.save();
     return ws;
   }
 
@@ -2493,6 +2525,7 @@ export class DBStore {
       questions: seedQuestions,
       scanPaperTemplates: [],
       worksheets,
+      levelWorksheets: [],
       answerSubmissions,
       evaluationReports,
       tickets,

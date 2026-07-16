@@ -6,12 +6,14 @@ import { fileURLToPath } from 'node:url';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const frontendDir = join(root, 'frontend');
 const backendDir = join(root, 'backend');
+const levelsBackendDir = join(backendDir, 'fln-backend');
 const modelDir = join(root, 'services', 'model');
 const setupOnly = process.argv.includes('--setup-only');
 const modelName = process.env.SMARTFLN_TROCR_MODEL || 'microsoft/trocr-base-handwritten';
 const modelPort = process.env.SMARTFLN_MODEL_PORT || '8090';
 const frontendPort = process.env.SMARTFLN_MVP_PORT || '3000';
 const backendPort = process.env.SMARTFLN_BACKEND_PORT || '3001';
+const levelsBackendPort = process.env.SMARTFLN_LEVELS_BACKEND_PORT || '4000';
 const cacheDir = resolve(process.env.SMARTFLN_TROCR_CACHE_DIR || join(modelDir, 'models', 'cache'));
 const readyMarker = join(cacheDir, `.ready-${modelName.replace(/[^a-z0-9.-]+/gi, '_')}-transformers-4.46.3`);
 
@@ -126,7 +128,7 @@ async function main() {
     return;
   }
 
-  console.log('\n[start] Starting Microsoft TrOCR, backend, and frontend services...');
+  console.log('\n[start] Starting Microsoft TrOCR, API, levels backend, and frontend services...');
   const model = start(modelPython, ['-m', 'app.main'], modelDir, {
     ...process.env,
     SMARTFLN_MODEL_HOST: '127.0.0.1',
@@ -143,12 +145,16 @@ async function main() {
     PORT: backendPort,
     SMARTFLN_MODEL_SERVICE_URL: `http://127.0.0.1:${modelPort}`
   });
+  const levelsBackend = start(process.execPath, ['server.js'], levelsBackendDir, {
+    ...process.env,
+    PORT: levelsBackendPort
+  });
   const frontend = start(process.execPath, [viteCli, '--host', '0.0.0.0', '--port', frontendPort], frontendDir, {
     ...process.env,
     VITE_API_TARGET: `http://127.0.0.1:${backendPort}`
   });
 
-  const children = [model, backend, frontend];
+  const children = [model, backend, levelsBackend, frontend];
   let stopping = false;
   const stopAll = () => {
     if (stopping) return;
@@ -171,12 +177,14 @@ async function main() {
     await Promise.all([
       waitFor(`http://127.0.0.1:${modelPort}/health`, 'Model service', model),
       waitFor(`http://127.0.0.1:${backendPort}/api/announcements`, 'Backend', backend),
+      waitFor(`http://127.0.0.1:${levelsBackendPort}/`, 'Levels backend', levelsBackend),
       waitFor(`http://127.0.0.1:${frontendPort}/`, 'Frontend', frontend)
     ]);
     console.log(`\nSmartFLN is ready: http://localhost:${frontendPort}/`);
     console.log(`Backend API: http://127.0.0.1:${backendPort}`);
+    console.log(`Levels backend: http://127.0.0.1:${levelsBackendPort}`);
     console.log(`Model health: http://127.0.0.1:${modelPort}/health`);
-    console.log('Press Ctrl+C to stop both services.\n');
+    console.log('Press Ctrl+C to stop all services.\n');
   } catch (error) {
     console.error(`\n${error.message}`);
     stopAll();

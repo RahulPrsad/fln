@@ -1,10 +1,11 @@
 import path from 'path';
 import express from 'express';
 import dotenv from 'dotenv';
-import { dbStore, UserRole, User, Student, School, Question, Worksheet, AnswerSubmission, EvaluationReport, Ticket, LogEntry, Announcement, ScanPaperTemplate, Intervention, BestPractice } from './db';
+import { dbStore, UserRole, User, Student, School, Question, Worksheet, LevelWorksheet, AnswerSubmission, EvaluationReport, Ticket, LogEntry, Announcement, ScanPaperTemplate, Intervention, BestPractice } from './db';
 import { generateAIDiagnostic, evaluateAIDiagnostic, generateAIPersonalizedWorksheet, evaluateAIWorksheet } from './gemini';
 import { generateDiagnosticPaper } from './paperGenerator';
 import { generateQuestionsForLevel } from './levelGenerator';
+import * as levelsBackendClient from './levelsBackendClient';
 import { randomUUID } from 'crypto';
 import fs from 'fs';
 
@@ -14,7 +15,7 @@ dotenv.config({ path: path.resolve(ROOT_DIR, '..', '.env') });
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
 async function startServer() {
-  // Initialize file-based DB
+  // Uses MongoDB when configured, with the Dev 2 JSON database as a local fallback.
   await dbStore.init();
 
   const app = express();
@@ -79,6 +80,144 @@ async function startServer() {
   }
 
   // --- API Endpoints ---
+
+  // Public stats (no auth required — used by landing page)
+  app.get('/api/stats', async (_req, res) => {
+    const db = dbStore.getDb();
+    if (!db) {
+      const [schools, students, users, worksheets] = await Promise.all([
+        dbStore.getSchools(),
+        dbStore.getStudents(),
+        dbStore.getUsers(),
+        dbStore.getWorksheets()
+      ]);
+      const certifiedCount = students.filter(student => student.currentLevel >= 5).length;
+      const avgFlnLevel = students.length
+        ? Math.round(students.reduce((sum, student) => sum + student.currentLevel, 0) / students.length)
+        : 0;
+      return res.json({
+        totalStates: new Set(schools.map(school => school.stateCode)).size,
+        totalDistricts: new Set(schools.map(school => school.districtCode)).size,
+        totalSchools: schools.length,
+        totalStudents: students.length,
+        totalAssessments: worksheets.length,
+        avgFlnLevel,
+        totalUsers: users.length,
+        certifiedCount,
+        certifiedPercent: students.length ? Math.round((certifiedCount / students.length) * 100) : 0
+      });
+    }
+
+    const [totalSchools, totalStudents, totalUsers, totalAssessments, stateCodes, districtCodes, avgResult, certifiedResult] = await Promise.all([
+      db.collection('schools').countDocuments(),
+      db.collection('students').countDocuments(),
+      db.collection('users').countDocuments(),
+      db.collection('worksheets').countDocuments(),
+      db.collection('schools').distinct('stateCode'),
+      db.collection('schools').distinct('districtCode'),
+      db.collection('students').aggregate([{ $group: { _id: null, avg: { $avg: '$currentLevel' } } }]).toArray(),
+      db.collection('students').aggregate([{ $match: { currentLevel: { $gte: 5 } } }, { $count: 'count' }]).toArray(),
+    ]);
+
+    const certifiedCount = certifiedResult[0]?.count ?? 0;
+    const avgFlnLevel = totalStudents > 0 ? Math.round(avgResult[0]?.avg ?? 0) : 0;
+
+    res.json({
+      totalStates: stateCodes.length,
+      totalDistricts: districtCodes.length,
+      totalSchools,
+      totalStudents,
+      totalAssessments,
+      avgFlnLevel,
+      totalUsers,
+      certifiedCount,
+      certifiedPercent: totalStudents > 0 ? Math.round((certifiedCount / totalStudents) * 100) : 0,
+    });
+  });
+
+  app.get('/api/states', async (_req, res) => {
+    const schools = await dbStore.getSchools();
+    const codes = [...new Set(schools.map(school => school.stateCode).filter(Boolean))].sort();
+    res.json({ success: true, data: codes.map(code => ({ id: code, code, name: code })) });
+  });
+
+  app.get('/api/districts/by-state/:stateId', async (req, res) => {
+    const schools = await dbStore.getSchools();
+    const codes = [...new Set(
+      schools
+        .filter(school => school.stateCode === req.params.stateId)
+        .map(school => school.districtCode)
+        .filter(Boolean)
+    )].sort();
+    res.json({
+      success: true,
+      data: codes.map(code => ({ id: code, code, name: code, state: req.params.stateId }))
+    });
+  });
+
+  app.get('/api/blocks/by-district/:districtId', async (req, res) => {
+    const schools = await dbStore.getSchools();
+    const matching = schools.filter(school => school.districtCode === req.params.districtId);
+    const codes = [...new Set(matching.map(school => school.blockCode).filter(Boolean))].sort();
+    res.json({
+      success: true,
+      data: codes.map(code => ({
+        id: code,
+        code,
+        name: code,
+        district: req.params.districtId,
+        state: matching.find(school => school.blockCode === code)?.stateCode || ''
+      }))
+    });
+  });
+
+  app.get('/api/schools/by-block/:blockId', async (req, res) => {
+    const schools = await dbStore.getSchools();
+    res.json({
+      success: true,
+      data: schools
+        .filter(school => school.blockCode === req.params.blockId)
+        .map(school => ({
+          id: school.id,
+          code: school.id,
+          name: school.name,
+          block: school.blockCode,
+          district: school.districtCode,
+          state: school.stateCode,
+          strength: school.strength
+        }))
+    });
+  });
+
+  app.post('/api/teachers', async (req, res) => {
+    const { firstName, lastName, email, phoneNumber, school } = req.body || {};
+    if (!firstName || !lastName || !email || !school) {
+      return res.status(400).json({ success: false, message: 'Name, email, and school are required.' });
+    }
+    const users = await dbStore.getUsers();
+    if (users.some(user => user.email.toLowerCase() === String(email).toLowerCase())) {
+      return res.status(409).json({ success: false, message: 'A user with this email already exists.' });
+    }
+    const teacher: User = {
+      id: `teacher_${randomUUID().slice(0, 8)}`,
+      name: `${String(firstName).trim()} ${String(lastName).trim()}`.trim(),
+      email: String(email).trim().toLowerCase(),
+      role: UserRole.TEACHER,
+      schoolId: String(school),
+      phoneNumber: phoneNumber ? String(phoneNumber) : undefined
+    };
+    await dbStore.addUser(teacher);
+    res.status(201).json({
+      success: true,
+      message: 'Teacher registered successfully.',
+      data: {
+        teacherId: teacher.id,
+        firstName: String(firstName).trim(),
+        lastName: String(lastName).trim(),
+        email: teacher.email
+      }
+    });
+  });
 
   // Auth: Login
   app.post('/api/auth/login', async (req, res) => {
@@ -471,7 +610,16 @@ async function startServer() {
     try {
       const result = await generateDiagnosticPaper({
         classNumber,
-        students: [{ name: student.name, studentId: student.id }]
+        students: [{
+          name: student.name,
+          studentId: student.id,
+          qrData: {
+            age: student.age, classGroup: student.classGroup, section: student.section,
+            schoolId: student.schoolId, currentLevel: student.currentLevel,
+            currentSubLevel: student.currentSubLevel, targetLevel: student.targetLevel,
+            streak: student.streak
+          }
+        }]
       });
       res.json({
         student,
@@ -506,7 +654,7 @@ async function startServer() {
       
       const result = await generateDiagnosticPaper({
         classNumber: Number(classNumber),
-        students
+        students: students.map((s: any) => ({ ...s, studentId: s.studentId || s.id || s.rollNo }))
       });
 
       const pdfUrl = `/output/${result.fileName}`;
@@ -917,7 +1065,125 @@ async function startServer() {
     }
   });
 
-  // Generate Personalized Level-Wise Worksheet PDF for a student
+  /**
+   * Shared pipeline: build a roster -> Levels_backend /api/generate-batch ->
+   * poll /api/batch-status -> /api/download-batch (zip) -> unpack
+   * worksheet.pdf + answer_key.json + coords.json -> save PDF into this
+   * backend's own /output (served statically) and persist a LevelWorksheet
+   * record (with the real answer key + OMR coords) per rendered file.
+   *
+   * Students are matched back to rendered files via the roster's
+   * `rollNumber` field, which we deliberately set to the student's stable
+   * internal id (this codebase has no separate roll-number field on
+   * Student) — Levels_backend echoes the original rollNumber back in its
+   * manifest.json per file, so the mapping is exact regardless of how it
+   * sanitizes folder names.
+   */
+  async function generateLevelWorksheetsViaLevelsBackend(
+    students: Student[],
+    _opts: { includeBatchId?: boolean } = {}
+  ): Promise<Array<{
+    studentId: string;
+    studentName: string;
+    batchId: string;
+    sublevelId: string;
+    setNum: number;
+    pdfUrl: string;
+  }>> {
+    const roster: levelsBackendClient.RosterEntry[] = students.map(s => ({
+      studentName: s.name,
+      rollNumber: s.id,
+      levelId: s.currentLevel,
+      sublevelId: s.currentSubLevel != null ? `${s.currentLevel}.${s.currentSubLevel}` : 'all',
+      setsPerSub: 1,
+      studentData: {
+        age: s.age, classGroup: s.classGroup, section: s.section, schoolId: s.schoolId,
+        currentLevel: s.currentLevel, currentSubLevel: s.currentSubLevel,
+        targetLevel: s.targetLevel, streak: s.streak
+      }
+    }));
+
+    const batchResult = await levelsBackendClient.generateBatch(roster);
+    await levelsBackendClient.waitForBatch(batchResult.batchId);
+    const zipBuffer = await levelsBackendClient.downloadBatchZip(batchResult.batchId);
+    const { manifest, files } = await levelsBackendClient.extractBatchZip(zipBuffer);
+
+    // groupKey ("<studentFolder>/<sublevelId>_set<n>") -> original rollNumber (== studentId)
+    const rollNumberByGroupKey = new Map<string, string>();
+    if (manifest && Array.isArray(manifest.students)) {
+      for (const ms of manifest.students) {
+        if (!Array.isArray(ms.files)) continue;
+        for (const f of ms.files) {
+          rollNumberByGroupKey.set(f.folder, ms.rollNumber);
+        }
+      }
+    }
+
+    const studentsById = new Map(students.map(s => [s.id, s]));
+    const localOutputDir = path.join(ROOT_DIR, 'output');
+    if (!fs.existsSync(localOutputDir)) fs.mkdirSync(localOutputDir, { recursive: true });
+
+    const out: Array<{ studentId: string; studentName: string; batchId: string; sublevelId: string; setNum: number; pdfUrl: string }> = [];
+
+    for (const file of files) {
+      const groupKey = `${file.studentFolder}/${file.sublevelId}_set${file.setNum}`;
+      const studentId = rollNumberByGroupKey.get(groupKey);
+      const student = studentId ? studentsById.get(studentId) : undefined;
+      if (!student) {
+        console.warn(`[levels-backend] Could not map rendered file back to a student: ${groupKey}`);
+        continue;
+      }
+
+      const fileName = `level_${student.currentLevel}_${file.sublevelId}_set${file.setNum}_${student.id}_${randomUUID()}.pdf`;
+      const filePath = path.join(localOutputDir, fileName);
+      fs.writeFileSync(filePath, file.pdfBuffer);
+      const pdfUrl = `/output/${fileName}`;
+
+      // Write corresponding JSONs alongside the PDF for single/batch files
+      const baseName = fileName.replace(/\.pdf$/, '');
+      if (file.answerKey) {
+        fs.writeFileSync(path.join(localOutputDir, `${baseName}_answer_key.json`), JSON.stringify(file.answerKey, null, 2));
+      }
+      if (file.coords) {
+        fs.writeFileSync(path.join(localOutputDir, `${baseName}_coords.json`), JSON.stringify(file.coords, null, 2));
+      }
+      if (file.questionPaper) {
+        fs.writeFileSync(path.join(localOutputDir, `${baseName}_question_paper.json`), JSON.stringify(file.questionPaper, null, 2));
+      }
+
+      const record: LevelWorksheet = {
+        id: 'LW_' + randomUUID(),
+        batchId: batchResult.batchId,
+        studentId: student.id,
+        studentName: student.name,
+        rollNumber: student.id,
+        levelId: student.currentLevel,
+        sublevelId: file.sublevelId,
+        setNum: file.setNum,
+        pdfUrl,
+        answerKey: file.answerKey,
+        coords: file.coords,
+        generatedAt: new Date().toISOString()
+      };
+      await dbStore.addLevelWorksheet(record);
+
+      out.push({
+        studentId: student.id,
+        studentName: student.name,
+        batchId: batchResult.batchId,
+        sublevelId: file.sublevelId,
+        setNum: file.setNum,
+        pdfUrl
+      });
+    }
+
+    return out;
+  }
+
+  // Generate Personalized Level-Wise Worksheet PDF for a single student.
+  // Pipeline: build a 1-entry roster -> Levels_backend /api/generate-batch
+  // -> poll /api/batch-status -> fetch /api/download-batch (zip) -> extract
+  // worksheet.pdf + answer_key.json + coords.json -> persist here.
   app.post('/api/worksheets/generate-level-pdf', async (req, res) => {
     const user = getAuthUser(req);
     if (!user) return res.status(401).json({ error: 'Unauthorized' });
@@ -936,15 +1202,31 @@ async function startServer() {
         return res.status(400).json({ error: 'Student has not completed their diagnostic test.' });
       }
 
-      const { generateLevelWorksheet } = await import('./paperGenerator');
-      const result = await generateLevelWorksheet({
-        studentId: student.id,
-        studentName: student.name,
-        levelId: student.currentLevel,
-        subIdx: student.currentSubLevel || 0
-      });
-
-      res.json({ success: true, pdfUrl: result.pdfUrl, templateUrl: result.templateUrl || '', questions: result.questions });
+      try {
+        const generated = await generateLevelWorksheetsViaLevelsBackend([student]);
+        if (generated.length === 0) {
+          throw new Error('Levels_backend returned no files for this student.');
+        }
+        res.json({ success: true, pdfUrl: generated[0].pdfUrl });
+      } catch (levelsBackendErr: any) {
+        // Deterministic fallback: the old in-process Puppeteer generator,
+        // so the button keeps working if Levels_backend is unreachable.
+        console.error('Levels_backend generation failed, falling back to local generator:', levelsBackendErr.message);
+        const { generateLevelWorksheet } = await import('./paperGenerator');
+        const result = await generateLevelWorksheet({
+          studentId: student.id,
+          studentName: student.name,
+          levelId: student.currentLevel,
+          subIdx: student.currentSubLevel || 0
+        });
+        res.json({
+          success: true,
+          pdfUrl: result.pdfUrl,
+          templateUrl: result.templateUrl || '',
+          questions: result.questions,
+          fallback: true
+        });
+      }
     } catch (err: any) {
       console.error('Level worksheet generation failed:', err);
       res.status(500).json({ success: false, error: err.message });
@@ -1329,6 +1611,78 @@ async function startServer() {
     });
 
     res.json({ submission, report });
+  });
+
+  // Generate Personalized Level-Wise Worksheets for a whole roster of
+  // students in ONE batch call to Levels_backend (the "Generate Batch"
+  // button in the teacher dashboard's Level-Wise Paper Generator panel).
+  app.post('/api/worksheets/generate-level-batch', async (req, res) => {
+    const user = getAuthUser(req);
+    if (!user) return res.status(401).json({ error: 'Unauthorized' });
+
+    const { studentIds } = req.body;
+    if (!Array.isArray(studentIds) || studentIds.length === 0) {
+      return res.status(400).json({ error: 'studentIds must be a non-empty array.' });
+    }
+
+    try {
+      const students = await dbStore.getStudents();
+      const targets: Student[] = [];
+      const skipped: Array<{ studentId: string; reason: string }> = [];
+
+      for (const id of studentIds) {
+        const student = students.find(s => s.id === id);
+        if (!student) {
+          skipped.push({ studentId: id, reason: 'Student not found.' });
+          continue;
+        }
+        if (student.currentLevel == null) {
+          skipped.push({ studentId: id, reason: 'Student has not completed their diagnostic test.' });
+          continue;
+        }
+        targets.push(student);
+      }
+
+      if (targets.length === 0) {
+        return res.status(400).json({ error: 'No eligible (placed) students in this request.', skipped });
+      }
+
+      const generated = await generateLevelWorksheetsViaLevelsBackend(targets, { includeBatchId: true });
+
+      const results = generated.map(g => ({
+        studentId: g.studentId,
+        studentName: g.studentName,
+        sublevelId: g.sublevelId,
+        setNum: g.setNum,
+        pdfUrl: g.pdfUrl
+      }));
+
+      res.json({
+        success: true,
+        batchId: generated[0]?.batchId || null,
+        studentsProcessed: targets.length,
+        totalFiles: generated.length,
+        results,
+        skipped
+      });
+    } catch (err: any) {
+      console.error('Level-wise batch generation failed:', err);
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // Streams the raw batch ZIP straight from Levels_backend, for the
+  // "Download Batch ZIP" button. No transformation — pass-through.
+  app.get('/api/worksheets/download-batch/:batchId', async (req, res) => {
+    try {
+      const zipBuffer = await levelsBackendClient.downloadBatchZip(req.params.batchId);
+      res.setHeader('Content-Type', 'application/zip');
+      res.setHeader('Content-Disposition', `attachment; filename="batch_${req.params.batchId}.zip"`);
+      res.send(zipBuffer);
+    } catch (err: any) {
+      console.error('Batch ZIP download failed:', err);
+      res.status(502).json({ error: err.message });
+    }
   });
 
   // Submit Completed Worksheet (ICR Structured Ingestion) & Scoring Engine
@@ -1843,7 +2197,7 @@ async function startServer() {
 
         job.fileName = result.fileName;
         job.filePath = result.filePath;
-        job.pdfUrl = `/output/${result.fileName}`;
+        job.pdfUrl = `/output/${result.pdfFileName || result.fileName}`;
         job.templateUrl = result.templateUrl || '';
         job.status = 'completed';
         job.completedAt = new Date().toISOString();

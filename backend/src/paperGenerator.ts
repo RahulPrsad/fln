@@ -11,6 +11,8 @@ if (!fs.existsSync(OUTPUT_DIR)) fs.mkdirSync(OUTPUT_DIR, { recursive: true });
 export interface PaperGenerationResult {
   fileName: string;
   filePath: string;
+  pdfFileName?: string;
+  pdfFilePath?: string;
   totalSets: number;
   studentOrder: Array<{ setNum: number; studentName: string }>;
   questions: Question[];
@@ -87,7 +89,7 @@ export async function generateDiagnosticPaper({
   onProgress
 }: {
   classNumber: number;
-  students: Array<{ name: string; studentId?: string }>;
+  students: Array<{ name: string; studentId?: string; rollNo?: string; qrData?: Record<string, unknown> }>;
   onProgress?: (setNum: number, total: number) => void;
 }): Promise<PaperGenerationResult> {
   if (!students.length) throw new Error('students must be a non-empty array.');
@@ -96,7 +98,7 @@ export async function generateDiagnosticPaper({
   const generationSeed = randomUUID();
 
   const paperStudents: ScanTemplateStudent[] = students.map((student, index) => {
-    const studentId = student.studentId || `PLACEHOLDER_${classNumber}_${index + 1}`;
+    const studentId = student.studentId || student.rollNo || `PLACEHOLDER_${classNumber}_${index + 1}`;
     const rosterStudent = roster.find(item => item.id === studentId);
     const targetLevel = rosterStudent?.currentLevel || classNumber;
     return {
@@ -106,7 +108,7 @@ export async function generateDiagnosticPaper({
     };
   });
 
-  return persistGeneratedPaper(await generateScanTemplatePaper({
+  const result = await persistGeneratedPaper(await generateScanTemplatePaper({
     classNumber,
     students: paperStudents,
     outputDir: OUTPUT_DIR,
@@ -114,6 +116,11 @@ export async function generateDiagnosticPaper({
     title: 'SMARTFLN DIAGNOSTIC QUESTION PAPER',
     onProgress
   }));
+  return {
+    ...result,
+    pdfFileName: result.fileName,
+    pdfFilePath: result.filePath
+  };
 }
 
 export async function generateLevelWorksheet({
