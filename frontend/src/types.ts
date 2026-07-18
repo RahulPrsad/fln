@@ -68,7 +68,6 @@ export interface Question {
   subtopic: string;
   difficulty: 'easy' | 'medium' | 'hard';
   source_level: number;
-  source_sublevel?: number;
   svgAsset?: string;
 }
 
