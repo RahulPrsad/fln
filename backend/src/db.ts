@@ -310,6 +310,7 @@ export class DBStore {
   private data: DatabaseSchema | null = null;
   private saveQueue: Promise<void> = Promise.resolve();
   public useMongo = false;
+  private mongoClient: MongoClient | null = null;
   private mongoDb: Db | null = null;
 
   getDb() {
@@ -317,7 +318,7 @@ export class DBStore {
   }
 
   async init() {
-    const mongoUri = process.env.MONGO_URI?.trim();
+    const mongoUri = (process.env.MONGO_URI || process.env.MONGODB_URI)?.trim();
     if (mongoUri) {
       await this.initMongo(mongoUri);
       return;
@@ -434,25 +435,49 @@ export class DBStore {
   }
 
   private async initMongo(mongoUri: string) {
-    const client = new MongoClient(mongoUri, { serverSelectionTimeoutMS: 5000 });
-    await client.connect();
-    this.mongoDb = client.db();
-    this.useMongo = true;
+    const maxAttempts = 3;
+    let lastError: unknown;
 
-    const seed = this.getSeedData();
-    const names = Object.keys(seed) as Array<keyof DatabaseSchema>;
-    for (const name of names) {
-      const collection = this.mongoDb.collection(String(name));
-      if (await collection.countDocuments() === 0 && seed[name].length > 0) {
-        await collection.insertMany(seed[name] as any[]);
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      const client = new MongoClient(mongoUri, {
+        connectTimeoutMS: 15000,
+        serverSelectionTimeoutMS: 15000
+      });
+
+      try {
+        await client.connect();
+        const mongoDb = client.db();
+        await mongoDb.command({ ping: 1 });
+
+        const seed = this.getSeedData();
+        const names = Object.keys(seed) as Array<keyof DatabaseSchema>;
+        for (const name of names) {
+          const collection = mongoDb.collection(String(name));
+          if (await collection.countDocuments() === 0 && seed[name].length > 0) {
+            await collection.insertMany(seed[name] as any[]);
+          }
+        }
+
+        this.data = {} as DatabaseSchema;
+        for (const name of names) {
+          this.data[name] = await mongoDb.collection(String(name)).find({}).toArray() as any;
+        }
+
+        this.mongoClient = client;
+        this.mongoDb = mongoDb;
+        this.useMongo = true;
+        console.log(`[Database] Connected to MongoDB database "${mongoDb.databaseName}".`);
+        return;
+      } catch (error) {
+        lastError = error;
+        await client.close().catch(() => undefined);
+        if (attempt < maxAttempts) {
+          await new Promise(resolve => setTimeout(resolve, attempt * 2000));
+        }
       }
     }
 
-    this.data = {} as DatabaseSchema;
-    for (const name of names) {
-      this.data[name] = await this.mongoDb.collection(String(name)).find({}).toArray() as any;
-    }
-    console.log('[Database] Connected to MongoDB.');
+    throw lastError instanceof Error ? lastError : new Error('MongoDB connection failed.');
   }
 
   private async save() {
