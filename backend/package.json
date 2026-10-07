@@ -42,7 +42,8 @@
     "test:scan-answer-keys": "tsx --test tests/scan-answer-keys.test.ts",
     "test:worksheet-layout-rules": "tsx --test tests/worksheet-layout-rules.test.ts",
     "test:template-renderer": "tsx src/services/questionTemplateRenderer.test.ts",
-    "test:evaluation-override": "tsx --test tests/evaluation-override.test.ts"
+    "test:evaluation-override": "tsx --test tests/evaluation-override.test.ts",
+    "test:skill-evolution": "tsx src/skillEvolution.test.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
