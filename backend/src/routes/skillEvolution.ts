@@ -88,6 +88,10 @@ export function registerSkillEvolutionRoutes(app: express.Express) {
 
     const id = req.body.id || `C-${Date.now().toString(36).toUpperCase()}`;
 
+    if (req.body.id && await dbStore.getCandidateSkillById(id)) {
+      return res.status(409).json({ error: 'A candidate skill with this id already exists.' });
+    }
+
     const candidate: CandidateSkill = {
       id,
       parentSkillId: String(parentSkillId).trim(),
@@ -130,14 +134,20 @@ export function registerSkillEvolutionRoutes(app: express.Express) {
     }
 
     const { action, skillName, targetSkillId, notes } = req.body;
-    const allowedActions = ['ACCEPT', 'REJECT', 'MERGE', 'SPLIT', 'REDEFINED'];
-    if (!action || !allowedActions.includes(String(action).toUpperCase())) {
+    const ACTION_TO_STATUS: Record<string, CandidateSkillStatus> = {
+      ACCEPT: 'ACCEPTED',
+      REJECT: 'REJECTED',
+      MERGE: 'MERGED',
+      SPLIT: 'SPLIT',
+      REDEFINE: 'REDEFINED',
+    };
+    const normalizedAction = ACTION_TO_STATUS[String(action).toUpperCase()];
+    if (!normalizedAction) {
       return res.status(400).json({
-        error: `Invalid action. Must be one of: ${allowedActions.join(', ')}`,
+        error: `Invalid action. Must be one of: ${Object.keys(ACTION_TO_STATUS).join(', ')}`,
       });
     }
 
-    const normalizedAction = String(action).toUpperCase() as CandidateSkillStatus;
     const now = new Date().toISOString();
 
     let createdSkill: Skill | undefined;
@@ -153,6 +163,7 @@ export function registerSkillEvolutionRoutes(app: express.Express) {
         name,
         description: candidate.observedPattern,
         sourceType: 'DISCOVERED_DATA',
+        source_type: 'DISCOVERED_DATA',
         validationStatus: 'VALIDATED',
         createdBy: user.email,
         validatedBy: user.email,

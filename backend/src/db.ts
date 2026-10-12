@@ -1149,6 +1149,7 @@ export interface Skill {
   name: string;
   description?: string;
   sourceType: SkillSourceType;
+  source_type?: SkillSourceType;
   validationStatus: SkillValidationStatus;
   createdBy: string;
   validatedBy?: string;
@@ -3714,6 +3715,7 @@ export class DBStore {
     if (this.data) {
       if (!this.data.candidateSkills) this.data.candidateSkills = [];
       this.data.candidateSkills.push(candidate);
+      if (!this.mongoDb) await this.save();
     }
     return candidate;
   }
@@ -3748,6 +3750,7 @@ export class DBStore {
     const idx = (this.data?.candidateSkills || []).findIndex(c => c.id === id);
     if (idx !== -1 && this.data) {
       this.data.candidateSkills[idx] = { ...this.data.candidateSkills[idx], ...finalUpdates };
+      if (!this.mongoDb) await this.save();
       return this.data.candidateSkills[idx];
     }
     return undefined;
@@ -3760,6 +3763,7 @@ export class DBStore {
     if (this.data) {
       if (!this.data.skills) this.data.skills = [];
       this.data.skills.push(skill);
+      if (!this.mongoDb) await this.save();
     }
     return skill;
   }

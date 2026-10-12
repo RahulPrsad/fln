@@ -5,7 +5,18 @@
  *   npm run test:skill-evolution --workspace @fln/backend
  */
 import assert from 'node:assert';
-import { dbStore, CandidateSkill, Skill } from './db';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+const scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fln-skill-evo-test-'));
+fs.mkdirSync(path.join(scratchDir, 'data'), { recursive: true });
+process.chdir(scratchDir);
+delete process.env.MONGODB_URI;
+process.env.NODE_ENV = 'test';
+
+const { dbStore } = await import('./db');
+import type { CandidateSkill, Skill } from './db';
 
 let passed = 0;
 let failed = 0;
