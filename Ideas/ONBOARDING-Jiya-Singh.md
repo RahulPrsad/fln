@@ -148,7 +148,7 @@ I added test coverage for student registration validation. The tests cover requi
 
 Following review feedback, I added tests for a date of birth that results in an age above 20 and for a future date of birth. I also registered the test file through the `test:student-create` script so it could be run through the backend's test workflow.
 
-The PR was merged. Before submission, the exact passing-test count should be checked against the final PR state. This work helped me understand how registration validation protects downstream workflows and why tests should verify behaviour rather than only implementation details.
+The PR was merged. This work helped me understand how registration validation protects downstream workflows and why tests should verify behaviour rather than only implementation details.
 
 ### PR #607 — Replace the hardcoded FLN level ceiling
 
