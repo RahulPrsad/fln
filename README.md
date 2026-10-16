@@ -1,4 +1,30 @@
-# SmartFLN dev5
+# SmartFLN volunteer portal (dev-6)
+
+A simplified assessment workflow for volunteers:
+
+- Home page: Volunteer login, About, and Help.
+- Workspace: Add student, Existing students, Generate paper, and Scan & evaluate.
+- New students start at Level 1. Records, papers, scan templates, and completed evaluations are persisted.
+- Each level paper contains three written-answer questions, one MCQ, and one matching activity.
+- Written answers have printed answer boxes used as OCR regions. MCQ and matching activities use the full question region for volunteer review.
+
+## Run locally
+
+Use Node.js 20+ and Python 3.11+. Run `npm run dev` for the normal first-time setup and service launcher.
+After installing dependencies, `npm run build:local` builds without compiler subprocesses.
+The backend can serve the compiled frontend with `NODE_ENV=production` and `PORT=3000`.
+
+`start-local.ps1` reuses the existing Windows model environment at `C:\fln-trocr`;
+see [LOCAL-RUN.md](LOCAL-RUN.md) for that machine's offline configuration and demo login.
+Model weights, installed dependencies, environment secrets, local database records,
+and generated PDFs are excluded from this repository.
+
+The existing MVP remains in `mvp/` for reference. The current application is in
+`frontend/`, `backend/`, and `services/model/`.
+
+---
+
+# SmartFLN 
 
 This branch contains the database-backed SmartFLN paper generator and the full
 QR, fiducial alignment, ROI cropping, Microsoft TrOCR, and volunteer-review
@@ -20,12 +46,13 @@ cd fln
 npm run dev
 ```
 
-The first run automatically installs the MVP dependencies, creates the Python
+The first run automatically installs the frontend/backend dependencies, creates the Python
 virtual environment, installs OpenCV/PyTorch/TrOCR, downloads
 `microsoft/trocr-base-handwritten`, and starts both services. Later runs reuse
 the local environment and model cache.
 
-- MVP: `http://localhost:3000/`
+- Frontend: `http://localhost:3000/`
+- Backend API: `http://127.0.0.1:3001`
 - Model health: `http://127.0.0.1:8090/health`
 
 Use `Ctrl+C` to stop both processes. Use `npm run setup` to prepare everything
@@ -42,6 +69,7 @@ Optional environment variables:
 - `SMARTFLN_MODEL_PYTHON`: existing prepared Python executable.
 - `SMARTFLN_TROCR_CACHE_DIR`: custom model-cache directory.
 - `SMARTFLN_MVP_PORT`: MVP port, default `3000`.
+- `SMARTFLN_BACKEND_PORT`: backend API port, default `3001`.
 - `SMARTFLN_MODEL_PORT`: model port, default `8090`.
 - `SMARTFLN_SKIP_MODEL_DOWNLOAD=true`: defer downloading weights until OCR use.
 
@@ -54,7 +82,7 @@ A large-scale, personalized assessment system that helps teachers measure, track
 ## Table of Contents
 - [What is FLN?](#what-is-fln)
 - [Why FLN Matters](#why-fln-matters)
-- [Government Initiatives](#government-initiatives)
+- [Initiatives](#initiatives)
 - [What This Software Does](#what-this-software-does)
 - [How It Works (Workflow)](#how-it-works-workflow)
 - [Tech Stack](#tech-stack)
@@ -79,11 +107,11 @@ The National Education Policy (NEP) 2020 explicitly recognized this and stated t
 
 This is the problem our project aims to help solve: giving schools and teachers a reliable, scalable, and personalized way to **assess** where each child stands on FLN, **act** on that data quickly, and **track** progress until every child clears the foundational bar.
 
-## Government Initiatives
+## Initiatives
 
 Some of the key national and state-level efforts this project aligns with:
 
-- **NIPUN Bharat** (National Initiative for Proficiency in Reading with Understanding and Numeracy) — launched by the Ministry of Education in July 2021 under the Samagra Shiksha scheme, with the goal that every child achieves grade-level FLN competencies by the end of Grade 3, by 2026–27. It uses a five-tier implementation structure (national, state, district, block, school).
+- **NIPUN Bharat** (National Initiative for Proficiency in Reading with Understanding and Numeracy) — launched in July 2021 under the Samagra Shiksha scheme, with the goal that every child achieves grade-level FLN competencies by the end of Grade 3, by 2026–27. It uses a five-tier implementation structure (national, state, district, block, school).
 - **NEP 2020** — the policy mandate that established universal FLN as the top priority for the Indian school system.
 - **DIKSHA & UDISE+** — existing national digital infrastructure for teacher resources and student/school data that FLN initiatives are encouraged to build on or align with.
 - **State-led missions** — several states have their own FLN programs aligned with NIPUN Bharat (e.g., Mission Buniyaad in Delhi, Mission Ankur in Madhya Pradesh), often with localized assessment tools and workbooks.
