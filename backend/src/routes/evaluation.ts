@@ -16,6 +16,7 @@ import { directPrerequisites, describeConcept } from '../competencyPrerequisites
 import { analyzeScanQuality } from '../scanQuality';
 import { calculateStandardAdvancement } from '../gradeLevelCalculator';
 import { computeRootCauseAnalysis } from '../rootCauseAnalysis';
+import { matchesChoiceLetter } from '../answerMatching';
 
 export function registerEvaluationRoutes(app: express.Express) {
 
@@ -50,12 +51,12 @@ export function registerEvaluationRoutes(app: express.Express) {
   };
 
   // Admin endpoint: configure (or clear) a cloud OCR API key.
-  // Restricted to superadmin / admin roles. Returns {provider, configured}.
+  // Restricted to superadmin role only. Returns {provider, configured}.
   app.post('/api/icr/cloud-config', async (req, res) => {
     const user = getAuthUser(req);
     if (!user) return res.status(401).json({ error: 'Unauthorized' });
-    if (user.role !== 'superadmin' && user.role !== 'admin') {
-      return res.status(403).json({ error: 'Admin role required.' });
+    if (user.role !== UserRole.SUPERADMIN) {
+      return res.status(403).json({ error: 'Superadmin role required.' });
     }
     const { provider, apiKey } = req.body || {};
     // Single OCR model: ollama-gemma4. Other providers (google, aws,
@@ -1075,7 +1076,8 @@ export function registerEvaluationRoutes(app: express.Express) {
         question: q.question,
         correctAnswer: q.answer,
         submittedAnswer: answers[q.question_id] || '',
-        isCorrect: (answers[q.question_id] || '').trim().toLowerCase() === q.answer.trim().toLowerCase(),
+        isCorrect: (answers[q.question_id] || '').trim().toLowerCase() === q.answer.trim().toLowerCase()
+          || matchesChoiceLetter(answers[q.question_id], q),
       })),
       // #402: this path never set rootCauses before, unlike the diagnostic
       // path — the same gap the override handler had, just one step
@@ -1262,7 +1264,7 @@ export function registerEvaluationRoutes(app: express.Express) {
 
     const student = await dbStore.getStudentById(req.params.studentId);
     if (!student) return res.status(404).json({ error: 'Student not found.' });
-    if (!canAccessStudent(user, student)) return res.status(403).json({ error: 'Forbidden.' });
+    if (!(await canAccessStudent(user, student))) return res.status(403).json({ error: 'Forbidden.' });
 
     const reps = await dbStore.getEvaluationReports({ studentIds: [req.params.studentId] });
     // Sort newest first so the UI's "most recent placement" view shows
@@ -1281,7 +1283,7 @@ export function registerEvaluationRoutes(app: express.Express) {
 
     const student = await dbStore.getStudentById(req.params.studentId);
     if (!student) return res.status(404).json({ error: 'Student not found.' });
-    if (!canAccessStudent(user, student)) return res.status(403).json({ error: 'Forbidden.' });
+    if (!(await canAccessStudent(user, student))) return res.status(403).json({ error: 'Forbidden.' });
 
     const reps = await dbStore.getEvaluationReports({ studentIds: [req.params.studentId] });
     const diagnosticReports = reps.filter(r => r.worksheetId === 'diagnostic');
@@ -1306,7 +1308,7 @@ export function registerEvaluationRoutes(app: express.Express) {
 
     const student = await dbStore.getStudentById(report.studentId);
     if (!student) return res.status(404).json({ error: 'Student not found.' });
-    if (!canAccessStudent(user, student)) return res.status(403).json({ error: 'Forbidden.' });
+    if (!(await canAccessStudent(user, student))) return res.status(403).json({ error: 'Forbidden.' });
 
     if (!report.questionResults || report.questionResults.length === 0) {
       return res.status(400).json({

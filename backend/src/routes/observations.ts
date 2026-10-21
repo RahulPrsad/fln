@@ -26,7 +26,7 @@ export function registerObservationRoutes(app: express.Express) {
     try {
       const student = (await dbStore.getStudents()).find(s => s.id === req.params.studentId);
       if (!student) return res.status(404).json({ error: 'Student not found.' });
-      if (!canAccessStudent(user, student)) return res.status(403).json({ error: 'Forbidden.' });
+      if (!(await canAccessStudent(user, student))) return res.status(403).json({ error: 'Forbidden.' });
 
       return res.json(await dbStore.getObservationRecordsForStudent(student.id, cycle));
     } catch (error: any) {
@@ -94,7 +94,7 @@ export function registerObservationRoutes(app: express.Express) {
     try {
       const student = (await dbStore.getStudents()).find(s => s.id === studentId.trim());
       if (!student) return res.status(404).json({ error: 'Student not found.' });
-      if (!canAccessStudent(user, student)) return res.status(403).json({ error: 'Forbidden.' });
+      if (!(await canAccessStudent(user, student))) return res.status(403).json({ error: 'Forbidden.' });
 
       const classGroup = (await dbStore.getClasses()).find(c => c.id === classId.trim());
       if (!classGroup) return res.status(404).json({ error: 'Class not found.' });

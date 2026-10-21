@@ -1,3 +1,5 @@
+import { ANSWER_TYPES } from '../types/questionTemplateParams';
+
 export const MIN_FONT_SIZE_PT = 18;
 export const MIN_ANSWER_BOX_HEIGHT_PT = 24;
 export const QUESTIONS_PER_PAGE_MAX = 4;
@@ -49,4 +51,54 @@ export function planQuestionPages(
   });
   if (current.length > 0) pages.push(current);
   return pages;
+}
+
+/**
+ * How much answer space each answer type gets (#590), defined here once and
+ * read by every renderer rather than copied into each template.
+ *
+ *   box         a framed area to write or draw in
+ *   line        a ruled line to write on (blanks to fill)
+ *   true-false  two labelled boxes, True and False
+ *   none        nothing drawn: the options themselves are printed, and the
+ *               child circles one; only a little room is kept after them
+ *
+ * Every drawn box is at least `MIN_ANSWER_BOX_HEIGHT_PT` tall.
+ */
+export type AnswerSpaceStyle = 'box' | 'line' | 'true-false' | 'none';
+export interface AnswerSpaceRule {
+  style: AnswerSpaceStyle;
+  widthPt: number;
+  heightPt: number;
+  dashed?: boolean;
+}
+
+export const ANSWER_SPACE_RULES: Readonly<Record<(typeof ANSWER_TYPES)[number], AnswerSpaceRule>> = {
+  'single-number': { style: 'box', widthPt: 150, heightPt: MIN_ANSWER_BOX_HEIGHT_PT },
+  'mcq-4':         { style: 'none', widthPt: 0, heightPt: 12 },
+  'fill-blanks':   { style: 'line', widthPt: 330, heightPt: 30 },
+  'true-false':    { style: 'true-false', widthPt: 230, heightPt: 34 },
+  'matching':      { style: 'box', widthPt: 420, heightPt: 96 },
+  'trace':         { style: 'box', widthPt: 420, heightPt: 120, dashed: true },
+};
+
+/** Used for a question whose template names no answer type (or one not listed). */
+export const DEFAULT_ANSWER_TYPE: (typeof ANSWER_TYPES)[number] = 'single-number';
+
+export function answerSpaceFor(answerType: string | null | undefined): AnswerSpaceRule {
+  const known = typeof answerType === 'string' && Object.prototype.hasOwnProperty.call(ANSWER_SPACE_RULES, answerType);
+  return ANSWER_SPACE_RULES[known ? (answerType as (typeof ANSWER_TYPES)[number]) : DEFAULT_ANSWER_TYPE];
+}
+
+/**
+ * Extra room kept on every side of a printed picture when the child answers by
+ * circling it, so a pencil loop around one object does not run into its
+ * neighbours. Applied only when the artwork's theme lists 'circle' in
+ * `supportedAnswerShapes`.
+ */
+export const CIRCLE_PADDING_PT = 12;
+
+/** Does this theme's artwork support being circled? Reads `supportedAnswerShapes`. */
+export function themeSupportsCircling(supportedAnswerShapes: readonly string[] | undefined): boolean {
+  return Array.isArray(supportedAnswerShapes) && supportedAnswerShapes.includes('circle');
 }

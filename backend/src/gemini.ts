@@ -1,6 +1,7 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { Question } from "./db";
 import { LEVEL_COUNT } from "./config/skillLevelMap";
+import { matchesChoiceLetter } from './answerMatching';
 
 // Valid Gemini model IDs, primary first then fallbacks (used by generateContentWithRetry).
 // Centralized here so the call sites below don't drift.
@@ -479,7 +480,7 @@ Provide a clean narrative feedback summary.`;
   questions.forEach((q) => {
     const submitted = (submittedAnswers[q.question_id] || '').trim().toLowerCase();
     const correct = q.answer.trim().toLowerCase();
-    if (answersMatch(submitted, correct)) {
+    if (answersMatch(submitted, correct) || matchesChoiceLetter(submitted, q)) {
       score++;
     }
   });
@@ -489,7 +490,7 @@ Provide a clean narrative feedback summary.`;
   questions.forEach((q) => {
     const submitted = (submittedAnswers[q.question_id] || '').trim().toLowerCase();
     const correct = q.answer.trim().toLowerCase();
-    if (!answersMatch(submitted, correct)) {
+    if (!(answersMatch(submitted, correct) || matchesChoiceLetter(submitted, q))) {
       failedLevels.push(q.source_level);
     }
   });
@@ -777,7 +778,7 @@ Provide:
 
     const correct = q.answer.trim().toLowerCase();
 
-    const isCorrect = answersMatch(submitted, correct);
+    const isCorrect = answersMatch(submitted, correct) || matchesChoiceLetter(submitted, q);
 
     const topic = q.topic || 'General Mathematics';
 
