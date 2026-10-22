@@ -18,6 +18,7 @@
 
 import type { Question, EvaluationReport } from './db';
 import { classifyErrorType } from './errorClassification';
+import { matchesChoiceLetter } from './answerMatching';
 
 export function computeRootCauseAnalysis(
   evalData: any,
@@ -76,7 +77,7 @@ export function computeRootCauseAnalysis(
       const difficulty = q.difficulty || 'medium';
       const cell = tally[difficulty] ?? { attempted: 0, correct: 0 };
       cell.attempted++;
-      if (norm(answers?.[q.question_id]) === norm(q.answer)) cell.correct++;
+      if (norm(answers?.[q.question_id]) === norm(q.answer) || matchesChoiceLetter(answers?.[q.question_id], q)) cell.correct++;
       tally[difficulty] = cell;
     }
     if (Object.keys(tally).length > 0) performanceByDifficulty = tally;

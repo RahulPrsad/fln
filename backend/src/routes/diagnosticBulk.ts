@@ -7,6 +7,7 @@ import { recordStudentCycleLock } from '../paperLock';
 import { generateDiagnosticPaper } from '../paperGenerator';
 import { generateQuestionsForLevel } from '../levelGenerator';
 import { LEVEL_COUNT } from '../config/skillLevelMap';
+import { describeAnswerKey, answerKeyProblem } from '../answerKeyCheck';
 
 export function registerDiagnosticBulkRoutes(app: express.Express) {
   // Get active coordinators/administrators
@@ -25,6 +26,8 @@ export function registerDiagnosticBulkRoutes(app: express.Express) {
     filePath: string;
     pdfUrl: string;
     error: string;
+    /** Students whose answer key was refused as incomplete (not stored). */
+    keyErrors?: Array<{ studentId: string; problem: string }>;
     startedAt: string;
     completedAt: string;
   }
@@ -224,6 +227,15 @@ export function registerDiagnosticBulkRoutes(app: express.Express) {
               ? keyItem.questions
               : result.questions;
 
+            const counts = describeAnswerKey({ ...keyItem, questions: studentQuestions });
+            console.log('[diagnostic/bulk] answer key counts', keyItem.studentId, JSON.stringify(counts));
+            const problem = answerKeyProblem(counts);
+            if (problem) {
+              console.error(`[diagnostic/bulk] answer key for ${keyItem.studentId} not stored: ${problem}`);
+              (job.keyErrors ??= []).push({ studentId: keyItem.studentId, problem });
+              continue;
+            }
+
             await dbStore.addDiagnosticAnswerKey({
               id: 'dak_' + randomUUID(),
               jobId: job.jobId,
@@ -344,6 +356,7 @@ export function registerDiagnosticBulkRoutes(app: express.Express) {
       status: job.status,
       pdfUrl: job.pdfUrl,
       error: job.error,
+      keyErrors: job.keyErrors ?? [],
       downloadUrl: job.status === 'completed' ? `/api/diagnostic/bulk/${job.jobId}/download` : null
     });
   });
@@ -835,6 +848,10 @@ export function registerDiagnosticBulkRoutes(app: express.Express) {
           : result.questions;
         if (singleKey) {
           const keyItem = singleKey;
+          const counts = describeAnswerKey({ ...keyItem, questions });
+          console.log('[diagnostic/single] answer key counts', JSON.stringify(counts));
+          const problem = answerKeyProblem(counts);
+          if (problem) return res.status(500).json({ error: `Paper generated but its answer key is incomplete: ${problem}` });
           await dbStore.addDiagnosticAnswerKey({
             id: 'dak_' + randomUUID(),
             jobId: 'single_' + student.id,

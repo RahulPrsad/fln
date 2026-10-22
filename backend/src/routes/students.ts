@@ -1,7 +1,7 @@
 import express from 'express';
 import { dbStore, UserRole, Student, Question, AnswerSubmission, EvaluationReport, EvaluationReasoning, CYCLE_NAMES } from '../db';
-import { answersMatch } from '../answerMatching';
-import { getAuthUser, canAccessStudent } from '../auth';
+import { answersMatch, matchesChoiceLetter } from '../answerMatching';
+import { getAuthUser, canAccessStudent, adminAreaIncludesSchool } from '../auth';
 import { generateDiagnosticPaper } from '../paperGenerator';
 import { generateQuestionsForLevel } from '../levelGenerator';
 import { evaluateAIDiagnostic } from '../gemini';
@@ -55,9 +55,18 @@ export function registerStudentRoutes(app: express.Express) {
           : DEFAULT_LIMIT);
 
     // server-side role scoping
-    let schoolScope: string | undefined;
+    let schoolScope: string | string[] | undefined;
     if (user.role === UserRole.TEACHER || user.role === UserRole.SCHOOL) {
       schoolScope = user.schoolId;
+    } else if (user.role === UserRole.ADMIN || user.role === UserRole.DISTRICT_ADMIN || user.role === UserRole.BLOCK_ADMIN) {
+      // A state, district or block admin sees only the schools of their own area
+      // (FLN #737); an account with no area code sees none.
+      const inArea = (await dbStore.getSchools()).filter(sc => adminAreaIncludesSchool(user, sc)).map(sc => sc.id);
+      if (inArea.length === 0) {
+        res.set('X-Total-Count', '0');
+        return res.json([]);
+      }
+      schoolScope = inArea;
     }
 
     // server-side search: `?q=foo` does a case-insensitive substring
@@ -78,7 +87,7 @@ export function registerStudentRoutes(app: express.Express) {
     // descending sort matches the same intent.
     const sort = String(req.query.sort ?? 'latest');
 
-    const opts: { limit?: number; offset?: number; schoolId?: string; sort?: 'latest'; q?: string } = {
+    const opts: { limit?: number; offset?: number; schoolId?: string | string[]; sort?: 'latest'; q?: string } = {
       offset: requestedOffset,
     };
     if (limit > 0) opts.limit = limit;
@@ -114,7 +123,7 @@ export function registerStudentRoutes(app: express.Express) {
     // panel can show "Page 1 of N matching 'foo'" with the right N.
     // Done in the DB (not from `masked.length`) because masked only
     // holds the current page.
-    const countOpts: { schoolId?: string; q?: string } = {};
+    const countOpts: { schoolId?: string | string[]; q?: string } = {};
     if (schoolScope) countOpts.schoolId = schoolScope;
     if (search) countOpts.q = rawQ;
     const total = await dbStore.countStudents(countOpts);
@@ -545,7 +554,7 @@ export function registerStudentRoutes(app: express.Express) {
     const { currentLevel, currentSubLevel, targetLevel, levelHistory } = req.body;
     const student = await dbStore.getStudentById(req.params.id);
     if (!student) return res.status(404).json({ error: 'Student not found.' });
-    if (!canAccessStudent(user, student)) return res.status(403).json({ error: 'Forbidden.' });
+    if (!(await canAccessStudent(user, student))) return res.status(403).json({ error: 'Forbidden.' });
 
     await dbStore.updateStudent(student.id, {
       currentLevel: currentLevel !== null && currentLevel !== undefined ? Number(currentLevel) : null,
@@ -566,7 +575,7 @@ export function registerStudentRoutes(app: express.Express) {
 
     const student = await dbStore.getStudentById(req.params.id);
     if (!student) return res.status(404).json({ error: 'Student not found.' });
-    if (!canAccessStudent(user, student)) return res.status(403).json({ error: 'Forbidden.' });
+    if (!(await canAccessStudent(user, student))) return res.status(403).json({ error: 'Forbidden.' });
 
     const {
       gender, dob, guardianName, guardianRelation, guardianContact, address,
@@ -599,7 +608,7 @@ export function registerStudentRoutes(app: express.Express) {
 
     const student = await dbStore.getStudentById(req.params.id);
     if (!student) return res.status(404).json({ error: 'Student not found.' });
-    if (!canAccessStudent(user, student)) return res.status(403).json({ error: 'Forbidden.' });
+    if (!(await canAccessStudent(user, student))) return res.status(403).json({ error: 'Forbidden.' });
 
     // Parse class number from classGroup (e.g. "Class 2" -> 2)
     const classMatch = student.classGroup.match(/\d+/);
@@ -701,7 +710,7 @@ export function registerStudentRoutes(app: express.Express) {
     let { questions, answers } = req.body;
     const student = await dbStore.getStudentById(req.params.id);
     if (!student) return res.status(404).json({ error: 'Student not found.' });
-    if (!canAccessStudent(user, student)) return res.status(403).json({ error: 'Forbidden.' });
+    if (!(await canAccessStudent(user, student))) return res.status(403).json({ error: 'Forbidden.' });
 
     // Parse class number from classGroup (e.g. "Class 2" -> 2)
     const classMatch = student.classGroup.match(/\d+/);
@@ -862,7 +871,7 @@ export function registerStudentRoutes(app: express.Express) {
         // handwriting, and "07" vs "7" is notation rather than a wrong
         // answer. Getting this wrong does not just lose a mark, it lowers
         // the child's placement. See backend/src/answerMatching.ts.
-        isCorrect: answersMatch(answers[q.question_id], q.answer),
+        isCorrect: answersMatch(answers[q.question_id], q.answer) || matchesChoiceLetter(answers[q.question_id], q),
         sourceLevel: Number.isFinite(srcLevel) ? srcLevel : NaN,
       };
     });
@@ -1179,7 +1188,7 @@ export function registerStudentRoutes(app: express.Express) {
     //
     //   question result (correct / incorrect, from the submitted answers)
     //     -> q.conceptId          (skip the question when absent)
-    //     -> CONCEPT_PREREQUISITES (Research/fln_level_networks.md, prereq edges only)
+    //     -> CONCEPT_PREREQUISITES (Research/02-93-levels/framework-build/fln_level_networks.md, prereq edges only)
     //     -> prerequisiteLearningPath
     //
     // There is no level-number arithmetic, no topic/subtopic string matching and
