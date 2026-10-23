@@ -62,11 +62,11 @@ These changes also showed me the value of testing boundary cases and registering
 
 ## 4. Gaps Observed in the Code
 
-The following observations are based on the curriculum configuration and the repository's documented design questions. Where the code comments identify a requirement but the implementation has not yet been verified, I have described it as an area to investigate rather than a confirmed bug.
+The following observations are based on the curriculum configuration and the repository's documented design requirements. Gap 2 is a confirmed inconsistency between the documented requirement and the readiness-band concept list; the other observations describe a content issue or design considerations that may warrant follow-up.
 
 ### Gap 1: A Balvatika assessment item may not test the intended concept
 
-**Location:** `backend/src/config/curriculumMap.ts`, lines 735–740.
+**Location:** `backend/src/config/curriculumMap.ts`, lines 58–67.
 
 The comments around the S3.4 curriculum entry describe a pre-existing content issue. The worksheet item uses three sticks and asks the child to circle the longest one. According to the code comments, this tests perceptual comparison rather than the intended concept of transitive inference.
 
@@ -74,32 +74,24 @@ The comments around the S3.4 curriculum entry describe a pre-existing content is
 
 The code comments already identify this as a follow-up. Before proposing a change, the corresponding worksheet specification and any related issue should be reviewed.
 
-### Gap 2: The documented Class 1 readiness requirement needs to be checked against the implementation
+### Gap 2: The readiness-band concept list omits a required concept
 
-**Location:** `backend/src/config/curriculumMap.ts`, lines 749–756.
+**Relevant files and references:**
+- `backend/src/config/curriculumMap.ts`, lines 71–77.
+- `backend/src/services/readinessBand.ts`, the `NIPUN_BALVATIKA_CONCEPTS` list (see PR #733).
+- PR #733.
 
-The comments explain that the broader NIPUN Bharat Balvatika readiness competency includes both numeral sequencing (S3.6) and arranging familiar events or objects in sequence (S1.8). They state that the logic computing the “Ready for Class 1” readiness band must require both concepts.
+The comments in `curriculumMap.ts` explain that the NIPUN Bharat Balvatika competency for sequencing covers both `S3.6` and `S1.8`. They state that the “Ready for Class 1” readiness band must require both concepts.
 
-**Why it matters:** If a readiness decision uses only one of these concepts, it may not reflect the full competency described in the curriculum.
+However, the `NIPUN_BALVATIKA_CONCEPTS` list in `readinessBand.ts` includes `S3.1` through `S3.7` but omits `S1.8`.
 
-The curriculum comments establish the intended requirement, but they do not by themselves prove that the current readiness calculation is incorrect. The implementation and its tests should be inspected before reporting this as an active defect.
+**Why it matters:** If readiness is calculated using this list, the required `S1.8` concept may not be included in the readiness calculation. This could lead to a readiness result that does not reflect the documented requirement.
 
-### Gap 3: Curriculum-dependent workflows need regression checks as levels change
+**Suggested follow-up:** Confirm the authoritative concept requirements with the maintainers, then align the readiness-band calculation and tests with the agreed specification. Include tests for the expected behaviour of both `S3.6` and `S1.8`.
 
-**Relevant areas:**
-- `backend/src/config/curriculumMap.ts`
-- `frontend/src/data/skillProgressionMap.ts`
-- `frontend/src/components/dashboards/FLNLevelReference.tsx`
+### Gap 3: Code should preserve the distinction between concept identity and level numbering
 
-Earlier assumptions about a 93-level curriculum affected multiple parts of the application. My merged PR #607 addressed the hardcoded level-ceiling assumptions identified in issue #570.
-
-**Why it matters:** Future curriculum changes can affect multiple workflows. A limit or mapping that is updated in one place but missed elsewhere could cause inconsistent level lists, progress information, or validation.
-
-This is a regression-testing consideration, not a claim that the old 93-level ceiling remains unfixed. Future curriculum updates should be checked across affected workflows using the current shared curriculum data.
-
-### Gap 4: Code should preserve the distinction between concept identity and level numbering
-
-**Location:** `backend/src/config/curriculumMap.ts`, lines 641–665.
+**Location:** `backend/src/config/curriculumMap.ts`, lines 17–21.
 
 The code comments describe `conceptId` as the durable identity of a curriculum concept and explain that level numbers can change when the curriculum is reordered.
 
@@ -184,4 +176,4 @@ Across these contributions, I learned to:
 - Prefer shared configuration and reusable helpers over repeated hardcoded rules.
 - Keep proposed changes aligned with the repository's current priorities and ask maintainers before making assumptions about curriculum or assessment design.
 
-I plan to continue contributing through issue-linked work, with a focus on understanding the existing design, testing changes carefully, and keeping implementations aligned with the project's evolving curriculum.
+I plan to continue contributing through issue-linked work, with a focus on understanding the existing design, testing changes carefully, and keeping implementation decisions grounded in the repository's current design.
