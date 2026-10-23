@@ -62,7 +62,7 @@ These changes also showed me the value of testing boundary cases and registering
 
 ## 4. Gaps Observed in the Code
 
-The following observations are based on the curriculum configuration and the repository's documented design requirements. Gap 2 is a confirmed inconsistency between the documented requirement and the readiness-band concept list; the other observations describe a content issue or design considerations that may warrant follow-up.
+The following observations are based on the curriculum configuration and the repository's documented design requirements. Gap 2 identifies a confirmed discrepancy between the curriculum comments and the readiness-band concept list. The intended behaviour should still be confirmed with maintainers; the other observations describe a content issue or design considerations that may warrant follow-up.
 
 ### Gap 1: A Balvatika assessment item may not test the intended concept
 
@@ -78,7 +78,7 @@ The code comments already identify this as a follow-up. Before proposing a chang
 
 **Relevant files and references:**
 - `backend/src/config/curriculumMap.ts`, lines 71–77.
-- `backend/src/services/readinessBand.ts`, the `NIPUN_BALVATIKA_CONCEPTS` list (see PR #733).
+- `backend/src/services/readinessBand.ts`, line 14 — `NIPUN_BALVATIKA_CONCEPTS` (PR #733).
 - PR #733.
 
 The comments in `curriculumMap.ts` explain that the NIPUN Bharat Balvatika competency for sequencing covers both `S3.6` and `S1.8`. They state that the “Ready for Class 1” readiness band must require both concepts.
