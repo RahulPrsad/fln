@@ -559,6 +559,8 @@ export interface EvaluationReport {
   id: string;
   studentId: string;
   worksheetId: string;
+  /** Assessment cycle that produced this report (absent on legacy/diagnostic reports). */
+  cycle?: CycleName;
   score: number;
   totalQuestions: number;
   totalCorrect?: number;
@@ -599,7 +601,7 @@ export interface EvaluationReport {
   // the teacher-override endpoint requires it to exist on the report it's
   // correcting, since a correction is meaningless without knowing which
   // question is being corrected.
-  questionResults?: { questionId: string; question?: string; correctAnswer?: string; submittedAnswer: string; isCorrect: boolean }[];
+  questionResults?: { questionId: string; question?: string; correctAnswer?: string; submittedAnswer: string; isCorrect: boolean; teacherErrorType?: string }[];
     teacherReviewed?: boolean;
     reviewedBy?: string; // reviewing teacher's email
     reviewedAt?: string;

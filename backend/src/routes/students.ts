@@ -5,7 +5,6 @@ import { getAuthUser, canAccessStudent, adminAreaIncludesSchool } from '../auth'
 import { generateDiagnosticPaper } from '../paperGenerator';
 import { generateQuestionsForLevel } from '../levelGenerator';
 import { evaluateAIDiagnostic } from '../gemini';
-import { runCertificationEligibility } from '../services/certificationRecords';
 import { invalidateFingerprintCache } from './misconceptions';
 import { assignStudentToArchetype } from '../studentArchetypeService';
 import { resolvePrerequisites, describeConcept, directPrerequisites } from '../competencyPrerequisites';
@@ -1179,7 +1178,7 @@ export function registerStudentRoutes(app: express.Express) {
     //
     //   question result (correct / incorrect, from the submitted answers)
     //     -> q.conceptId          (skip the question when absent)
-    //     -> CONCEPT_PREREQUISITES (Research/fln_level_networks.md, prereq edges only)
+    //     -> CONCEPT_PREREQUISITES (Research/02-93-levels/framework-build/fln_level_networks.md, prereq edges only)
     //     -> prerequisiteLearningPath
     //
     // There is no level-number arithmetic, no topic/subtopic string matching and
@@ -1356,8 +1355,9 @@ export function registerStudentRoutes(app: express.Express) {
       console.error('[archetype] Failed to assign student to misconception archetype:', error);
     }
 
-    // Fire-and-forget: re-evaluate certification eligibility.
-    runCertificationEligibility(student);
+    // Issue #845: certification eligibility is NOT evaluated on diagnostic
+    // submissions. Only End-of-year worksheet submissions trigger it
+    // (see routes/evaluation.ts).
 
     await dbStore.addLog({
       id: 'log_' + Date.now(),
