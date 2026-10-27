@@ -650,7 +650,7 @@ export function registerStudentRoutes(app: express.Express) {
     }
 
     res.json({
-      student,
+      student: toPublicStudent(student),
       diagnosticPaper: {
         id: 'diag_' + student.id + '_' + Date.now(),
         studentId: student.id,
@@ -820,7 +820,7 @@ export function registerStudentRoutes(app: express.Express) {
         });
       }
       return res.json({
-        student,
+        student: toPublicStudent(student),
         evaluation: { score: existingReport.score, recommendedLevel: existingReport.recommendedLevel, narrative: existingReport.narrative },
         report: existingReport,
         alreadySubmitted: true
@@ -1385,7 +1385,7 @@ export function registerStudentRoutes(app: express.Express) {
       });
     }
 
-    res.json({ student, evaluation: { score, recommendedLevel, narrative }, report });
+    res.json({ student: toPublicStudent(student), evaluation: { score, recommendedLevel, narrative }, report });
   };
 
   app.post('/api/students/:id/diagnostic/submit', submitDiagnostic('diagnostic'));
