@@ -30,15 +30,21 @@ The branches differed by 940 upstream commits and 25 project commits.
 - `npm run lint`: passes frontend and backend TypeScript checks.
 - `npm run build`: passes frontend and backend production builds.
 - Frontend test suite: 90 passing tests across 10 files.
-- Backend default test suite: passes.
+- Backend default test suite: passes. All 44 `test:*` backend scripts also pass.
 - Additional backend tests for answer keys, scan keys, paper types, administrator
   scope, file-store fallback, worksheet content/layout, student history, and roster
   filters: 71 passing tests.
 - `backend/tests/scan-integration.test.ts`: 3 passing integration tests covering real
   PDF/template generation, authentication/school scope/QR identity, and Mongo upserts.
 - Python model contract and pipeline suites: 18 passing tests.
+- ESLint, curriculum level count and generated skill-map consistency checks: pass.
+- Live route checks: 139 routes, 400 requests as anonymous/teacher/superadmin;
+  12 pre-existing baseline findings and zero new findings. The launcher was adapted
+  in memory for Windows so the repository source remained unchanged.
 
-The production build reports an existing bundle-size warning. Upstream files retain
+The upstream `check:pr` Bash wrapper fails before executing checks on this Windows
+host (`NAMES: unbound variable`); the checks above were invoked directly. The separate
+Bash smoke wrapper was not run. The production build reports an existing bundle-size warning. Upstream files retain
 their existing whitespace. Live Atlas connectivity and inference with downloaded
 TrOCR weights were not exercised; the tests use local stores and contract fixtures.
 File presence and retained merge ancestry establish upstream inclusion, while the

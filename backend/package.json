@@ -10,6 +10,7 @@
     "build": "esbuild src/index.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs --banner:js=\"const __im_url = require('url').pathToFileURL(__filename).href;\" --define:import.meta.url=__im_url",
     "start": "node dist/server.cjs",
     "lint": "tsc --noEmit",
+    "test:scan-integration": "tsx --test tests/scan-integration.test.ts",
     "test:fingerprint": "tsx src/misconceptionFingerprint.test.ts",
     "test:question-template-download": "tsx --test tests/question-template-download.test.ts",
     "test:question-template-import": "tsx --test tests/question-template-import.test.ts",
