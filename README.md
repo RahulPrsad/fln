@@ -345,6 +345,41 @@ All branches must follow this naming convention (`/`, not `:` — a colon is not
 4. **Review is two stages, in order: an automated first pass, then human review.** A bot pass may auto-reject a PR with a comment explaining why (fix and resubmit) — it never auto-approves. A PR that passes the automated pass is queued for human review; a maintainer merges it, not the contributor who opened it, and not necessarily the first human to look at it.
 5. If you're a new contributor, submit your [Onboarding Document](#rules) (see Rules above) with or before your first PR.
 
+## Repository Blueprint (EGM)
+
+High-altitude map of the code-bearing directories and the contracts each one carries. Each linked `README.md` lists that directory's Interface, Invariants and Side Effects. `docs/`, `Ideas/` and `Database/` hold documentation only and carry no contract. Four other directories hold no source but are read by code, so changing them can break scripts and seeds: `FLN SVG HTML files(22-59)/` (seed and question-extraction input for `backend/src/seedLevelHtml.ts`, `extractQuestions.ts` and `seedCurriculumLevels.ts`), `Research/` (crosswalk JSON read by `scripts/check-level-notation-drift.ts` and `seedCurriculumLevels.ts`, plus files written by `scripts/export-levels-docs.js` and `scripts/propose-59-to-93-crosswalk.ts`), `data/` (tracked `db.json` and `questionBank.json`; `scripts/sanitize-question-bank-svgs.ts` rewrites the question bank) and `backend/data/` (git-ignored local seed files). `mvp/` is git-ignored output.
+
+### Local Interface & Invariants
+- `test_ocr_api.py`: manual check of the ICR API (`python test_ocr_api.py <image_path>`). It is for local or seeded environments only. Known gap: it POSTs to `/api/icr/evaluate-pdf`, which the backend does not register (the registered route is `/api/icr/evaluate-cloud`, `backend/src/routes/evaluation.ts:557`), so the script cannot succeed as written.
+- `package.json`: npm workspaces root with three workspaces (`frontend`, `backend`, `backend/fln-backend`) exposing `dev`, `dev:frontend`, `dev:backend`, `build`, `start`, `lint`, `lint:eslint`, `seed:question-bank` and the `check:*` PR gates.
+- `eslint.config.mjs` and `eslint-suppressions.json`: shared lint configuration and baselined suppressions.
+- `masterTemplate.html`: standalone worksheet template.
+
+### Subdirectories & System Boundaries
+- Backend: [./backend/README.md](./backend/README.md) - the API server (`src/`), the Puppeteer batch worksheet renderer (`fln-backend/`) and operator scripts.
+  - [./backend/src/README.md](./backend/src/README.md) - Express + MongoDB server: auth, paper generation, evaluation, certification.
+  - [./backend/src/modules/vault/README.md](./backend/src/modules/vault/README.md) - Aadhaar tokenization vault.
+  - [./backend/fln-backend/README.md](./backend/fln-backend/README.md) - standalone Puppeteer batch worksheet generator.
+- Frontend: [./frontend/README.md](./frontend/README.md) - React 19 + Vite SPA; backend traffic goes through `src/services/apiClient.ts`, with one direct `fetch` of a PDF URL in `src/components/panels/DiagnosticTestPanel.tsx:130`. Standalone worksheet generators live in [./frontend/public/worksheets/README.md](./frontend/public/worksheets/README.md).
+- AI services: [./ai-services/README.md](./ai-services/README.md) - Python evaluation pipeline and personalized next-phrase exam generator. These are run by hand from the command line. The backend calls only `ai-services/scripts/pdf_rasterize.py` (`backend/src/routes/evaluation.ts:150,659`); nothing in `backend/` or `frontend/` references `run_pipeline.py`, `personalized_evaluation_pipeline.py` or the numbered stage scripts.
+- Scripts: [./scripts/README.md](./scripts/README.md) - repo tooling, Mongo migrations, derived-artifact generators. PR gates are in [./scripts/ci/README.md](./scripts/ci/README.md).
+
+### Global Invariants
+- Backend and frontend share data by generated snapshot, never by import; the curriculum registry in `backend/src/config` and `frontend/src/data` must stay in step.
+- Scope and authorization are enforced by the backend; the frontend only hides UI.
+- Aadhaar values and token IDs stay out of API responses and logs, and reversal goes only through the vault's TOTP step-up flow.
+- Generated files (skill-level map, curriculum summary, levels docs) are regenerated from source, not hand-edited.
+- The PR gate (`scripts/ci/pr-checks.sh`) runs only the sections you select and continues after a failure. ESLint, level, route and smoke checks use baselines, so only new problems fail and fixed entries are removed from the baseline. Type checks (`tsc --noEmit` per workspace, `pr-checks.sh:82-83`) have no baseline: any type error fails.
+
+### Global Side Effects
+- MongoDB (`MONGODB_URI`): the server, seed and migration scripts read and write it; `seed.ts` and `reseed.ts` drop collections.
+- External calls: Gemini and Groq LLM APIs, plus an optional admin email.
+- Headless Chromium (Puppeteer) is spawned by the worksheet renderers and some checks.
+- The PR gate spawns a local backend and temporarily moves `backend/data/db.json` aside.
+
+### System Verification
+- Run: `npm install`, then `npm run lint` and `npm run check:pr`. Workspace tests: `npm test --workspace @fln/backend` and `npm test --workspace @fln/frontend`.
+
 ## License
 
 This repository is open source. *(License file to be added — e.g., MIT/Apache 2.0. Update this section once finalized.)*
