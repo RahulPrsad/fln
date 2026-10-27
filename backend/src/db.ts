@@ -103,6 +103,12 @@ import type {
   QuestionTemplate,
   QuestionOption,
   CurriculumLevel,
+  CandidateSkill,
+  CandidateSkillStatus,
+  CandidateSkillEvidence,
+  Skill,
+  SkillSourceType,
+  SkillValidationStatus,
 } from './curriculum.types';
 import type {
   LevelWorksheet,
@@ -162,6 +168,8 @@ interface DatabaseSchema {
   generationWindows: WorksheetGenerationWindow[];
   teacherObservationRecords: TeacherObservationRecord[];
   attemptRecords: AttemptRecord[];
+  candidateSkills: CandidateSkill[];
+  skills: Skill[];
 }
 
 const COLLECTION_NAMES: Record<keyof DatabaseSchema, string> = {
@@ -194,6 +202,8 @@ const COLLECTION_NAMES: Record<keyof DatabaseSchema, string> = {
   generationWindows: 'generationWindows',
   teacherObservationRecords: 'teacher_observation_records',
   attemptRecords: 'attempt_records',
+  candidateSkills: 'candidate_skills',
+  skills: 'skills',
 };
 
 /**
@@ -420,6 +430,22 @@ export class DBStore {
           console.log('Successfully ensured indexes on "attempt_records" collection');
         } catch (e: any) {
           console.warn('Failed to ensure indexes on "attempt_records" collection:', e.message);
+        }
+
+        // Ensure indexes on D1.6 candidate_skills and skills collections (#481)
+        try {
+          const candColl = db.collection('candidate_skills');
+          await candColl.createIndex({ id: 1 }, { unique: true });
+          await candColl.createIndex({ parentSkillId: 1 });
+          await candColl.createIndex({ status: 1 });
+
+          const skillsColl = db.collection('skills');
+          await skillsColl.createIndex({ id: 1 }, { unique: true });
+          await skillsColl.createIndex({ parentSkillId: 1 });
+          await skillsColl.createIndex({ validationStatus: 1 });
+          console.log('Successfully ensured indexes on "candidate_skills" and "skills" collections');
+        } catch (e: any) {
+          console.warn('Failed to ensure indexes on "candidate_skills" and "skills" collections:', e.message);
         }
 
         for (const [key, collName] of Object.entries(COLLECTION_NAMES)) {
@@ -2726,6 +2752,88 @@ export class DBStore {
     };
   }
 
+  // --- D1.6 Skill Evolution: Candidate Skills & Skills Methods (#481) ---
+
+  async addCandidateSkill(candidate: CandidateSkill): Promise<CandidateSkill> {
+    if (this.mongoDb) {
+      await this.mongoDb.collection<CandidateSkill>('candidate_skills').insertOne(candidate);
+    }
+    if (this.data) {
+      if (!this.data.candidateSkills) this.data.candidateSkills = [];
+      this.data.candidateSkills.push(candidate);
+      if (!this.mongoDb) await this.save();
+    }
+    return candidate;
+  }
+
+  async getCandidateSkills(filter?: { status?: CandidateSkillStatus; parentSkillId?: string }): Promise<CandidateSkill[]> {
+    if (this.mongoDb) {
+      const q: any = {};
+      if (filter?.status) q.status = filter.status;
+      if (filter?.parentSkillId) q.parentSkillId = filter.parentSkillId;
+      return await this.mongoDb.collection<CandidateSkill>('candidate_skills').find(q).sort({ createdAt: -1 }).toArray();
+    }
+    let list = this.data?.candidateSkills || [];
+    if (filter?.status) list = list.filter(c => c.status === filter.status);
+    if (filter?.parentSkillId) list = list.filter(c => c.parentSkillId === filter.parentSkillId);
+    return list;
+  }
+
+  async getCandidateSkillById(id: string): Promise<CandidateSkill | undefined> {
+    if (this.mongoDb) {
+      return (await this.mongoDb.collection<CandidateSkill>('candidate_skills').findOne({ id })) || undefined;
+    }
+    return (this.data?.candidateSkills || []).find(c => c.id === id);
+  }
+
+  async updateCandidateSkill(id: string, updates: Partial<CandidateSkill>): Promise<CandidateSkill | undefined> {
+    const updatedAt = new Date().toISOString();
+    const finalUpdates = { ...updates, updatedAt };
+    if (this.mongoDb) {
+      await this.mongoDb.collection<CandidateSkill>('candidate_skills').updateOne({ id }, { $set: finalUpdates });
+      return (await this.mongoDb.collection<CandidateSkill>('candidate_skills').findOne({ id })) || undefined;
+    }
+    const idx = (this.data?.candidateSkills || []).findIndex(c => c.id === id);
+    if (idx !== -1 && this.data) {
+      this.data.candidateSkills[idx] = { ...this.data.candidateSkills[idx], ...finalUpdates };
+      if (!this.mongoDb) await this.save();
+      return this.data.candidateSkills[idx];
+    }
+    return undefined;
+  }
+
+  async addSkill(skill: Skill): Promise<Skill> {
+    if (this.mongoDb) {
+      await this.mongoDb.collection<Skill>('skills').insertOne(skill);
+    }
+    if (this.data) {
+      if (!this.data.skills) this.data.skills = [];
+      this.data.skills.push(skill);
+      if (!this.mongoDb) await this.save();
+    }
+    return skill;
+  }
+
+  async getSkills(filter?: { parentSkillId?: string; validationStatus?: SkillValidationStatus }): Promise<Skill[]> {
+    if (this.mongoDb) {
+      const q: any = {};
+      if (filter?.parentSkillId) q.parentSkillId = filter.parentSkillId;
+      if (filter?.validationStatus) q.validationStatus = filter.validationStatus;
+      return await this.mongoDb.collection<Skill>('skills').find(q).sort({ id: 1 }).toArray();
+    }
+    let list = this.data?.skills || [];
+    if (filter?.parentSkillId) list = list.filter(s => s.parentSkillId === filter.parentSkillId);
+    if (filter?.validationStatus) list = list.filter(s => s.validationStatus === filter.validationStatus);
+    return list;
+  }
+
+  async getSkillById(id: string): Promise<Skill | undefined> {
+    if (this.mongoDb) {
+      return (await this.mongoDb.collection<Skill>('skills').findOne({ id })) || undefined;
+    }
+    return (this.data?.skills || []).find(s => s.id === id);
+  }
+
   // --- Diagnostic Answer Key Methods ---
 
   async addDiagnosticAnswerKey(key: DiagnosticAnswerKey) {
@@ -4664,7 +4772,10 @@ export class DBStore {
       teacherObservationRecords: [],
       // Same reasoning again -- a child's actual hints/scaffolding evidence
       // isn't something to fabricate demo data for either.
-      attemptRecords: []
+      attemptRecords: [],
+      // D1.6 Candidate skills and discovered skills (#481)
+      candidateSkills: [],
+      skills: []
     };
   }
 }
