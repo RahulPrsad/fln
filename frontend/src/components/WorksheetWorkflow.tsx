@@ -1,7 +1,9 @@
+import { apiFetch, withBase } from '../services/apiClient';
 import React, { useState, useEffect } from 'react';
 import { ClassGroup, Worksheet, Student, AnswerSubmission, EvaluationReport } from '../types';
 import { SvgLibraryResolver } from './SvgLibraryResolver';
 import { WorksheetIframeModal } from './WorksheetIframeModal';
+import { simulateWrongAnswer } from '../services/simulatedAnswers';
 
 interface WorksheetWorkflowProps {
   classGroup: ClassGroup;
@@ -12,11 +14,82 @@ interface WorksheetWorkflowProps {
 }
 
 export const WorksheetWorkflow: React.FC<WorksheetWorkflowProps> = ({ classGroup, students, token, userRole, onBack }) => {
+  const isSchool = userRole === 'school';
   const [worksheet, setWorksheet] = useState<Worksheet | null>(null);
   const [activeStudentId, setActiveStudentId] = useState<string>('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+  const [generationWindow, setGenerationWindow] = useState<{
+    start: string;
+    teacherPriorityEnd: string;
+    end: string;
+    cycle: 'Baseline' | 'Mid-year' | 'End-of-year';
+    generatedByRole: string | null;
+    generatedByEmail: string | null;
+  } | null>(null);
+
+  const [generationTimeLeft, setGenerationTimeLeft] = useState<number | null>(null);
+  useEffect(() => {
+    const fetchGenerationWindow = async () => {
+      try {
+        const cycles: Array<'Baseline' | 'Mid-year' | 'End-of-year'> = [
+          'Baseline',
+          'Mid-year',
+          'End-of-year'
+        ];
+
+        for (const cycle of cycles) {
+          const res = await apiFetch(
+            `/api/worksheets/generation-window?classId=${classGroup.id}&cycle=${cycle}`,
+            {
+              headers: {
+                'Authorization': `Bearer ${token}`
+              }
+            }
+          );
+
+          if (res.ok) {
+            const data = await res.json();
+
+            if (new Date(data.end).getTime() > Date.now()) {
+              setGenerationWindow(data);
+              break;
+            }
+          }
+        }
+      } catch (_) {
+        // No active generation window to restore.
+      }
+    };
+
+    fetchGenerationWindow();
+  }, [classGroup.id, token]);
+  useEffect(() => {
+    if (!generationWindow) {
+      setGenerationTimeLeft(null);
+      return;
+    }
+
+    const updateTimer = () => {
+      const remaining = Math.max(
+        0,
+        new Date(generationWindow.end).getTime() - Date.now()
+      );
+
+      setGenerationTimeLeft(remaining);
+
+      if (remaining === 0) {
+        setGenerationWindow(null);
+      }
+    };
+
+    updateTimer();
+
+    const timer = setInterval(updateTimer, 1000);
+
+    return () => clearInterval(timer);
+  }, [generationWindow]);
 
   const [pdfGenerating, setPdfGenerating] = useState(false);
   const [pdfUrl, setPdfUrl] = useState('');
@@ -29,48 +102,79 @@ export const WorksheetWorkflow: React.FC<WorksheetWorkflowProps> = ({ classGroup
   // Poll/fetch worksheet for this class
   const fetchWorksheets = async () => {
     try {
-      const res = await fetch('/api/classes', {
+      const res = await apiFetch('/api/classes', {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       if (res.ok) {
         // Fetch all generated worksheets
-        const wsRes = await fetch('/api/logbook', { // logbook fetches can reveal ws stats, or list directly
+        const wsRes = await apiFetch('/api/logbook', { // logbook fetches can reveal ws stats, or list directly
           headers: { 'Authorization': `Bearer ${token}` }
         });
         // Simply pull directly from DB log details or find general worksheets
-        const activeWsRes = await fetch('/api/students', { // student lists
+        const activeWsRes = await apiFetch('/api/students', { // student lists
           headers: { 'Authorization': `Bearer ${token}` }
         });
       }
     } catch (_) {}
   };
+  const generateWorksheets = async (
+  cycle: 'Baseline' | 'Mid-year' | 'End-of-year'
+) => {
+  setLoading(true);
+  setError('');
+  setSuccess('');
 
-  const generateWorksheets = async (cycle: 'Baseline' | 'Mid-year' | 'End-of-year') => {
-    setLoading(true);
-    setError('');
-    setSuccess('');
-    try {
-      const res = await fetch('/api/worksheets/generate', {
+  try {
+    const windowRes = await apiFetch(
+      '/api/worksheets/generation-window/start',
+      {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({ classId: classGroup.id, cycle })
-      });
-      const data = await res.json();
-      if (res.ok) {
-        setWorksheet(data);
-        setSuccess('Class worksheets generated successfully using Gemini AI personalization!');
-      } else {
-        setError(data.error || 'Failed to generate worksheets due to active generation locks.');
       }
-    } catch (err) {
-      setError('Network error generating worksheets.');
-    } finally {
-      setLoading(false);
+    );
+
+    if (!windowRes.ok) {
+      const windowData = await windowRes.json();
+      setError(windowData.error || 'Failed to start generation window.');
+      return;
     }
-  };
+
+    const windowData = await windowRes.json();
+    setGenerationWindow(windowData);
+
+    const res = await apiFetch('/api/worksheets/generate', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify({ classId: classGroup.id, cycle })
+    });
+
+    const data = await res.json();
+
+    if (res.ok) {
+      setWorksheet(data);
+      setGenerationWindow(data.generationWindow || windowData);
+      setSuccess(
+        'Class worksheets generated successfully using Gemini AI personalization!'
+      );
+    } else {
+      setError(
+        data.error ||
+          'Failed to generate worksheets due to active generation locks.'
+      );
+    }
+  } catch (err) {
+    setError('Network error generating worksheets.');
+  } finally {
+    setLoading(false);
+  }
+};
 
   const handleAnswerChange = (qId: string, val: string) => {
     setStudentAnswers({ ...studentAnswers, [qId]: val });
@@ -79,9 +183,10 @@ export const WorksheetWorkflow: React.FC<WorksheetWorkflowProps> = ({ classGroup
   const submitStudentAnswers = async (studentId: string) => {
     setLoading(true);
     setError('');
+    setSuccess('');
     setEvaluationResult(null);
     try {
-      const res = await fetch('/api/evaluation/submit', {
+      const res = await apiFetch('/api/evaluation/submit', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -93,13 +198,21 @@ export const WorksheetWorkflow: React.FC<WorksheetWorkflowProps> = ({ classGroup
           answers: studentAnswers
         })
       });
-      const data = await res.json();
+      // Not every failure is JSON — an Express error page is HTML, and res.json()
+      // on that used to throw and surface misleadingly as "Network error".
+      const raw = await res.text();
+      let data: any = null;
+      try {
+        data = raw ? JSON.parse(raw) : null;
+      } catch {
+        data = null;
+      }
       if (res.ok) {
         setEvaluationResult(data);
         setStudentAnswers({});
         setSuccess(`Successfully evaluated and saved ${data.submission.studentName}'s answers.`);
       } else {
-        setError(data.error || 'Failed to submit student answers.');
+        setError(data?.error || `Failed to submit student answers (HTTP ${res.status}).`);
       }
     } catch (err) {
       setError('Network error submitting answer sheet.');
@@ -112,7 +225,7 @@ export const WorksheetWorkflow: React.FC<WorksheetWorkflowProps> = ({ classGroup
     setPdfGenerating(true);
     setError('');
     try {
-      const res = await fetch('/api/worksheets/generate-pdf', {
+      const res = await apiFetch('/api/worksheets/generate-pdf', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -181,22 +294,58 @@ export const WorksheetWorkflow: React.FC<WorksheetWorkflowProps> = ({ classGroup
           <p className="text-zinc-500 dark:text-zinc-400 text-sm leading-relaxed max-w-md mx-auto">
             Choose an assessment cycle to generate distinct, AI-personalized papers for each child based on their current FLN mathematical level milestones.
           </p>
-
+                    {generationWindow && generationTimeLeft !== null && (
+            <div className="text-center text-sm font-medium text-zinc-700 dark:text-zinc-300">
+              {generationWindow.cycle} worksheet generation window:{' '}
+              {Math.floor(generationTimeLeft / 60000)}:
+              {String(
+                Math.floor((generationTimeLeft % 60000) / 1000)
+              ).padStart(2, '0')}{' '}
+              remaining
+            </div>
+          )}
           <div className="flex flex-col items-center gap-3 pt-4">
-            <div className="flex justify-center gap-3">
+            <div className="flex justify-center gap-3 flex-wrap">
               <button
                 onClick={() => generateWorksheets('Baseline')}
-                disabled={loading}
+                disabled={
+                  loading ||
+                  (isSchool &&
+                    generationWindow !== null &&
+                    generationTimeLeft !== null &&
+                    generationTimeLeft > 30 * 60 * 1000)
+                }
                 className="bg-zinc-900 hover:bg-zinc-800 text-white font-medium text-sm py-2.5 px-5 rounded-lg transition-colors disabled:opacity-50 shadow-sm"
               >
                 Generate Baseline Worksheets
               </button>
+
               <button
                 onClick={() => generateWorksheets('Mid-year')}
-                disabled={loading}
+                disabled={
+                  loading ||
+                  (isSchool &&
+                    generationWindow !== null &&
+                    generationTimeLeft !== null &&
+                    generationTimeLeft > 30 * 60 * 1000)
+                }
                 className="bg-zinc-900 hover:bg-zinc-800 text-white font-medium text-sm py-2.5 px-5 rounded-lg transition-colors disabled:opacity-50 shadow-sm"
               >
                 Generate Mid-Year Worksheets
+              </button>
+
+              <button
+                onClick={() => generateWorksheets('End-of-year')}
+                disabled={
+                  loading ||
+                  (isSchool &&
+                    generationWindow !== null &&
+                    generationTimeLeft !== null &&
+                    generationTimeLeft > 30 * 60 * 1000)
+                }
+                className="bg-zinc-900 hover:bg-zinc-800 text-white font-medium text-sm py-2.5 px-5 rounded-lg transition-colors disabled:opacity-50 shadow-sm"
+              >
+                Generate End-of-Year Worksheets
               </button>
             </div>
             <button
@@ -256,7 +405,7 @@ export const WorksheetWorkflow: React.FC<WorksheetWorkflowProps> = ({ classGroup
                   </button>
                   {pdfUrl && (
                     <a
-                      href={pdfUrl}
+                      href={withBase(pdfUrl)}
                       target="_blank"
                       rel="noreferrer"
                       className="bg-emerald-600 hover:bg-emerald-700 text-white font-mono text-xs font-semibold px-3 py-1.5 rounded border border-emerald-500 flex items-center gap-1.5"
@@ -290,11 +439,11 @@ export const WorksheetWorkflow: React.FC<WorksheetWorkflowProps> = ({ classGroup
                       <div className="flex justify-between items-center border-b border-zinc-200 dark:border-zinc-700 pb-3">
                         <div>
                           <h5 className="font-display font-bold text-zinc-900 dark:text-white uppercase text-sm tracking-tight">{student.name}</h5>
-                          <p className="text-[10px] font-mono text-zinc-400 dark:text-zinc-500">Student ID: {student.id} · Target Level: Level {student.targetLevel}</p>
+                          <p className="text-[10px] font-mono text-zinc-400 dark:text-zinc-500">Student ID: {student.displayId || student.id} · Target Level: Level {student.targetLevel !== null && student.targetLevel !== undefined ? student.targetLevel : 'Not Assessed'}</p>
                         </div>
                         <div className="text-right">
                           <span className="text-xs font-mono font-bold uppercase bg-zinc-100 dark:bg-zinc-800 px-2.5 py-1 rounded border border-zinc-200 dark:border-zinc-700 text-zinc-600 dark:text-zinc-300">
-                            Current Level {student.currentLevel}
+                            Current Level {student.currentLevel !== null && student.currentLevel !== undefined ? student.currentLevel : 'Not Assessed'}
                           </span>
                         </div>
                       </div>
@@ -309,7 +458,7 @@ export const WorksheetWorkflow: React.FC<WorksheetWorkflowProps> = ({ classGroup
                             <p className="text-zinc-800 dark:text-zinc-100 text-sm font-medium leading-relaxed">{q.question.replace(`[For ${student.name} - Level ${student.currentLevel}] `, '')}</p>
 
                             {q.svgAsset && (
-                              <SvgLibraryResolver category={q.svgAsset} count={student.currentLevel + 1} />
+                              <SvgLibraryResolver category={q.svgAsset} count={(student.currentLevel || 0) + 1} />
                             )}
 
                             {q.answer_type === 'choice' && q.choices && (
@@ -359,7 +508,7 @@ export const WorksheetWorkflow: React.FC<WorksheetWorkflowProps> = ({ classGroup
                 >
                   <option value="">Choose Student...</option>
                   {students.map(s => (
-                    <option key={s.id} value={s.id}>{s.name} (Level {s.currentLevel})</option>
+                    <option key={s.id} value={s.id}>{s.name} (Level {s.currentLevel !== null && s.currentLevel !== undefined ? s.currentLevel : 'Not Assessed'})</option>
                   ))}
                 </select>
               </div>
@@ -390,7 +539,8 @@ export const WorksheetWorkflow: React.FC<WorksheetWorkflowProps> = ({ classGroup
                           const filled: { [key: string]: string } = {};
                           const qs = worksheet.questions.filter(q => q.question_id.startsWith(activeStudentId + '_'));
                           qs.forEach((q, idx) => {
-                            filled[q.question_id] = idx === 0 ? 'FAIL' : q.answer;
+                            filled[q.question_id] =
+                              idx === 0 ? simulateWrongAnswer(q.answer, activeStudentId) : q.answer;
                           });
                           setStudentAnswers(filled);
                         }}
@@ -405,7 +555,7 @@ export const WorksheetWorkflow: React.FC<WorksheetWorkflowProps> = ({ classGroup
                           worksheet.questions
                             .filter(q => q.question_id.startsWith(activeStudentId + '_'))
                             .forEach(q => {
-                              filled[q.question_id] = 'WRONG';
+                              filled[q.question_id] = simulateWrongAnswer(q.answer, activeStudentId);
                             });
                           setStudentAnswers(filled);
                         }}

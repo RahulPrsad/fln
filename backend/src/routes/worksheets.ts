@@ -1,0 +1,784 @@
+import express from 'express';
+import path from 'path';
+import fs from 'fs';
+import { randomUUID } from 'crypto';
+import { dbStore , CYCLE_NAMES } from '../db';
+import { UserRole } from '../identity.types';
+import type { Student } from '../student.types';
+import type {
+  Question,
+} from '../curriculum.types';
+import type {
+  WorksheetGenerationWindow,
+  Worksheet,
+  LevelWorksheet,
+} from '../assessment.types';
+import { getAuthUser } from '../auth';
+import { generateQuestionsForLevel } from '../levelGenerator';
+import * as levelsBackendClient from '../levelsBackendClient';
+import { ROOT_DIR } from '../config';
+import { getLevelForConcept } from '../config/curriculumMap';
+import { PAPER_TYPE_CONFIG, getPaperTypeConfig, spreadQuestionCount } from '../config/paperTypeConfig';
+import { recordStudentCycleLock } from '../paperLock';
+import {
+  getGenerationWindowStatus,
+  getLatestGenerationWindow,
+  isWorksheetGenerationLocked
+} from '../generationWindowRules';
+/**
+ * Shared pipeline: build a roster -> Levels_backend /api/generate-batch ->
+ * poll /api/batch-status -> /api/download-batch (zip) -> unpack
+ * worksheet.pdf + answer_key.json + coords.json -> save PDF into this
+ * backend's own /output (served statically) and persist a LevelWorksheet
+ * record (with the real answer key + OMR coords) per rendered file.
+ *
+ * Students are matched back to rendered files via the roster's
+ * `rollNumber` field, which we deliberately set to the student's stable
+ * internal id (this codebase has no separate roll-number field on
+ * Student) — Levels_backend echoes the original rollNumber back in its
+ * manifest.json per file, so the mapping is exact regardless of how it
+ * sanitizes folder names.
+ */
+async function generateLevelWorksheetsViaLevelsBackend(
+  students: Student[],
+  _opts: { includeBatchId?: boolean } = {}
+): Promise<Array<{
+  studentId: string;
+  studentName: string;
+  batchId: string;
+  sublevelId: string;
+  setNum: number;
+  pdfUrl: string;
+}>> {
+  const roster: levelsBackendClient.RosterEntry[] = students.map(s => ({
+    studentName: s.name,
+    rollNumber: s.id,
+    levelId: s.currentLevel,
+    sublevelId: s.currentSubLevel != null ? `${s.currentLevel}.${s.currentSubLevel}` : 'all',
+    setsPerSub: 1,
+    studentData: {
+      age: s.age, classGroup: s.classGroup, section: s.section, schoolId: s.schoolId,
+      currentLevel: s.currentLevel, currentSubLevel: s.currentSubLevel,
+      targetLevel: s.targetLevel
+    }
+  }));
+
+  const batchResult = await levelsBackendClient.generateBatch(roster);
+  await levelsBackendClient.waitForBatch(batchResult.batchId);
+  const zipBuffer = await levelsBackendClient.downloadBatchZip(batchResult.batchId);
+  const { manifest, files } = await levelsBackendClient.extractBatchZip(zipBuffer);
+
+  // groupKey ("<studentFolder>/<sublevelId>_set<n>") -> original rollNumber (== studentId)
+  const rollNumberByGroupKey = new Map<string, string>();
+  if (manifest && Array.isArray(manifest.students)) {
+    for (const ms of manifest.students) {
+      if (!Array.isArray(ms.files)) continue;
+      for (const f of ms.files) {
+        rollNumberByGroupKey.set(f.folder, ms.rollNumber);
+      }
+    }
+  }
+
+  const studentsById = new Map(students.map(s => [s.id, s]));
+  const localOutputDir = path.join(ROOT_DIR, 'output');
+  if (!fs.existsSync(localOutputDir)) fs.mkdirSync(localOutputDir, { recursive: true });
+
+  const out: Array<{ studentId: string; studentName: string; batchId: string; sublevelId: string; setNum: number; pdfUrl: string }> = [];
+
+  for (const file of files) {
+    const groupKey = `${file.studentFolder}/${file.sublevelId}_set${file.setNum}`;
+    const studentId = rollNumberByGroupKey.get(groupKey);
+    const student = studentId ? studentsById.get(studentId) : undefined;
+    if (!student) {
+      console.warn(`[levels-backend] Could not map rendered file back to a student: ${groupKey}`);
+      continue;
+    }
+
+    const fileName = `level_${student.currentLevel}_${file.sublevelId}_set${file.setNum}_${student.id}_${randomUUID()}.pdf`;
+    const filePath = path.join(localOutputDir, fileName);
+    fs.writeFileSync(filePath, file.pdfBuffer);
+    const pdfUrl = `/output/${fileName}`;
+
+    // Write corresponding JSONs alongside the PDF for single/batch files
+    const baseName = fileName.replace(/\.pdf$/, '');
+    if (file.answerKey) {
+      fs.writeFileSync(path.join(localOutputDir, `${baseName}_answer_key.json`), JSON.stringify(file.answerKey, null, 2));
+    }
+    if (file.coords) {
+      fs.writeFileSync(path.join(localOutputDir, `${baseName}_coords.json`), JSON.stringify(file.coords, null, 2));
+    }
+    if (file.questionPaper) {
+      fs.writeFileSync(path.join(localOutputDir, `${baseName}_question_paper.json`), JSON.stringify(file.questionPaper, null, 2));
+    }
+
+    const record: LevelWorksheet = {
+      id: 'LW_' + randomUUID(),
+      batchId: batchResult.batchId,
+      studentId: student.id,
+      studentName: student.name,
+      rollNumber: student.id,
+      levelId: student.currentLevel,
+      sublevelId: file.sublevelId,
+      setNum: file.setNum,
+      pdfUrl,
+      answerKey: file.answerKey,
+      coords: file.coords,
+      generatedAt: new Date().toISOString()
+    };
+    await dbStore.addLevelWorksheet(record);
+
+    out.push({
+      studentId: student.id,
+      studentName: student.name,
+      batchId: batchResult.batchId,
+      sublevelId: file.sublevelId,
+      setNum: file.setNum,
+      pdfUrl
+    });
+  }
+
+  return out;
+}
+
+export function registerWorksheetRoutes(app: express.Express) {
+  // List worksheets (class-level generation records), scoped by role the
+  // same way /api/evaluation/reports is. Used by the frontend's Worksheets
+  // page to compute real Pending vs Evaluated counts, instead of the old
+  // hardcoded WORKSHEETS_MOCK fixture.
+  app.get('/api/worksheets', async (req, res) => {
+    const user = getAuthUser(req);
+    if (!user) return res.status(401).json({ error: 'Unauthorized' });
+
+    const worksheets = await dbStore.getWorksheets();
+
+    if (user.role === UserRole.SUPERADMIN) {
+      return res.json(worksheets);
+    }
+    if (user.role === UserRole.SCHOOL || user.role === UserRole.TEACHER) {
+      return res.json(worksheets.filter(w => w.schoolId === user.schoolId));
+    }
+    if (user.role === UserRole.VOLUNTEER) {
+      return res.json(worksheets.filter(w => user.assignedSchools?.includes(w.schoolId)));
+    }
+    if (user.role === UserRole.ADMIN || user.role === UserRole.DISTRICT_ADMIN || user.role === UserRole.BLOCK_ADMIN) {
+      const schools = await dbStore.getSchools();
+      const schoolById = new Map(schools.map(sc => [sc.id, sc]));
+      return res.json(worksheets.filter(w => {
+        const school = schoolById.get(w.schoolId);
+        if (!school) return false;
+        if (user.role === UserRole.ADMIN) return school.stateCode === user.stateCode;
+        if (user.role === UserRole.DISTRICT_ADMIN) return school.districtCode === user.districtCode;
+        return school.blockCode === user.blockCode; // BLOCK_ADMIN
+      }));
+    }
+    return res.json(worksheets);
+  });
+    app.post('/api/worksheets/generation-window/start', async (req, res) => {
+      const user = getAuthUser(req);
+      if (!user) return res.status(401).json({ error: 'Unauthorized' });
+
+      const { classId, cycle } = req.body;
+
+      const validCycles = CYCLE_NAMES;
+
+      if (!classId || !cycle) {
+        return res.status(400).json({
+          error: 'Class ID and assessment cycle are required.'
+        });
+      }
+
+      if (!validCycles.includes(cycle)) {
+        return res.status(400).json({
+          error: 'Invalid assessment cycle.'
+        });
+      }
+
+      const classes = await dbStore.getClasses();
+      const classObj = classes.find(c => c.id === classId);
+      if (!classObj) return res.status(404).json({ error: 'Class not found.' });
+
+      if (user.role !== UserRole.TEACHER && user.role !== UserRole.SCHOOL) {
+        return res.status(403).json({
+          error: 'Only teachers or school users can start a worksheet generation window.'
+        });
+      }
+
+      if (user.schoolId !== classObj.schoolId) {
+        return res.status(403).json({ error: 'Access denied.' });
+      }
+
+      const existingWindows = await dbStore.getGenerationWindows();
+      const existingWindow = getLatestGenerationWindow(existingWindows, classId, cycle);
+
+      if (
+        existingWindow &&
+        !existingWindow.closed &&
+        new Date(existingWindow.end) > new Date()
+      ) {
+        return res.json(existingWindow);
+      }
+
+      const start = new Date();
+      const teacherPriorityEnd = new Date(start.getTime() + 30 * 60 * 1000);
+      const end = new Date(start.getTime() + 60 * 60 * 1000);
+
+      const generationWindow: WorksheetGenerationWindow = {
+        id: randomUUID(),
+        classId,
+        cycle,
+        schoolId: classObj.schoolId,
+        start: start.toISOString(),
+        teacherPriorityEnd: teacherPriorityEnd.toISOString(),
+        end: end.toISOString(),
+        generatedByRole: null,
+        generatedByEmail: null,
+        closed: false
+      };
+      await dbStore.addGenerationWindow(generationWindow);
+
+      return res.status(201).json(generationWindow);
+    });
+
+    app.get('/api/worksheets/generation-window', async (req, res) => {
+      const user = getAuthUser(req);
+      if (!user) return res.status(401).json({ error: 'Unauthorized' });
+
+      const { classId, cycle } = req.query;
+
+      if (!classId || !cycle) {
+        return res.status(400).json({
+          error: 'Class ID and assessment cycle are required.'
+        });
+      }
+
+      const classes = await dbStore.getClasses();
+      const classObj = classes.find(c => c.id === classId);
+
+      if (!classObj) {
+        return res.status(404).json({ error: 'Class not found.' });
+      }
+
+      if (user.role === UserRole.TEACHER || user.role === UserRole.SCHOOL) {
+        if (user.schoolId !== classObj.schoolId) {
+          return res.status(403).json({ error: 'Access denied.' });
+        }
+      }
+
+      const generationWindows = await dbStore.getGenerationWindows();
+      const generationWindow = getLatestGenerationWindow(generationWindows, classId as string, cycle as string);
+
+      if (!generationWindow) {
+        return res.status(404).json({
+          error: 'No worksheet generation window found.'
+        });
+      }
+
+      return res.json(generationWindow);
+    });
+
+    app.post('/api/worksheets/generate', async (req, res) => {
+      const user = getAuthUser(req);
+      if (!user) return res.status(401).json({ error: 'Unauthorized' });
+
+      const { classId, cycle } = req.body;
+      if (!classId || !cycle) {
+        return res.status(400).json({ error: 'Class ID and assessment cycle are required.' });
+      }
+
+      const classes = await dbStore.getClasses();
+      const classObj = classes.find(c => c.id === classId);
+      if (!classObj) return res.status(404).json({ error: 'Class not found.' });
+
+      // Check if school is low or high strength
+      const schools = await dbStore.getSchools();
+      const school = schools.find(s => s.id === classObj.schoolId);
+      if (!school) return res.status(404).json({ error: 'School not found.' });
+
+      const generationWindows = await dbStore.getGenerationWindows();
+      const generationWindow = getLatestGenerationWindow(generationWindows, classId, cycle);
+
+      if (!generationWindow) {
+        return res.status(409).json({
+          error: 'Worksheet generation window has not been started.'
+        });
+      }
+
+      const currentTime = new Date();
+
+      const windowStatus = getGenerationWindowStatus(
+        generationWindow,
+        user.role,
+        currentTime
+      );
+
+      if (windowStatus === 'expired') {
+        if (!generationWindow.closed) {
+          await dbStore.updateGenerationWindow(generationWindow.id, {
+            closed: true
+          });
+        }
+
+        return res.status(410).json({
+          error: 'Worksheet generation window has expired.'
+        });
+      }
+
+      if (windowStatus === 'teacher-priority-ended') {
+        return res.status(403).json({
+          error: 'Teacher priority period has ended. School can now generate the worksheet.'
+        });
+      }
+
+      if (windowStatus === 'school-priority-not-started') {
+        return res.status(403).json({
+          error: 'Teacher priority period is still active.'
+        });
+      }
+
+      if (
+        user.role === UserRole.SCHOOL &&
+        currentTime < new Date(generationWindow.teacherPriorityEnd)
+      ) {
+        return res.status(403).json({
+          error: 'Teacher priority period is still active.'
+        });
+      }
+
+      // Check if Teacher is banned due to Delayed Attempts (§6.5)
+      if (user.role === UserRole.TEACHER && user.isBanned) {
+        return res.status(403).json({ error: 'Generation Denied: Teacher account is suspended/banned due to 3 Delayed Attempts within the academic year.' });
+      }
+
+      // Check if School is locked out entirely (§6.5)
+      if (school.isAccessLocked) {
+        if (user.role === UserRole.TEACHER || user.role === UserRole.SCHOOL) {
+          return res.status(403).json({ error: 'School Access Suspended: All teachers have defaulted. Management is reassigned to Block Admin / Volunteer.' });
+        }
+      }
+
+      // Check for Generation Lock (§13.2 R-11)
+      // The existing pairwise lock blocks DIFFERENT roles (Teacher↔School,
+      // Volunteer↔Block Admin). It does NOT block the same role from
+      // re-triggering — but that's the bug: a teacher who generated and
+      // printed 5 min ago can hit Generate again and overwrite their own
+      // paper. For Baseline / Mid-year / End-of-year cycles (per CLAUDE.md
+      // policy + SRS), one generation per (classId, cycle) is the rule.
+      // Remedial / Practice worksheets are NOT generated through this
+      // route; they go through /api/worksheets/generate-level-pdf.
+      const existingWorksheets = await dbStore.getWorksheets();
+      const conflicting = existingWorksheets.find(w => w.classId === classId && w.cycle === cycle);
+      if (isWorksheetGenerationLocked(conflicting)) {
+        return res.status(423).json({
+          error: 'Worksheet generation is already locked for this class and assessment cycle.',
+          lockedByRole: conflicting!.generatedByRole,
+          lockedByEmail: conflicting!.generatedByEmail
+        });
+      }
+    
+
+    // Generate personalized questions for every student in the class
+    const students = await dbStore.getStudents();
+    const classStudents = students.filter(s => s.classGroup === classObj.className && s.section === classObj.section && s.schoolId === classObj.schoolId);
+
+    if (classStudents.length === 0) {
+      return res.status(400).json({ error: 'No students found in this class roster.' });
+    }
+
+    // Compile distinct personalized questions per student based on level and sub-level
+    const compiledQuestions: Question[] = [];
+
+    for (const student of classStudents) {
+      const subLvl = student.currentSubLevel || 0;
+      const qs = await generateQuestionsForLevel(student.currentLevel, subLvl);
+      // Map question IDs to be student-specific to prevent duplicate collisions
+      qs.forEach(q => {
+        compiledQuestions.push({
+          ...q,
+          question_id: `${student.id}_${q.question_id}`,
+          question: `[For ${student.name} - L${student.currentLevel}.${subLvl}] ${q.question}`
+        });
+      });
+    }
+
+    // Setup strict Timing Windows (§1.4 Sequential timings)
+    const now = new Date();
+    const todayStr = now.toISOString().split('T')[0];
+
+    // Check if other worksheets exist for the same school on the same day to make print windows sequential & non-overlapping
+    const sameDayWorksheets = existingWorksheets.filter(w => w.schoolId === classObj.schoolId && w.date === todayStr);
+
+    let printStart = new Date(now.getTime());
+    if (sameDayWorksheets.length > 0) {
+      // Find the latest printWindowEnd
+      const latestEnd = new Date(Math.max(...sameDayWorksheets.map(w => new Date(w.timing.printWindowEnd).getTime())));
+      if (latestEnd.getTime() > now.getTime()) {
+        printStart = latestEnd;
+      }
+    }
+
+    const printEnd = new Date(printStart.getTime() + 60 * 60 * 1000); // 1 hour print window
+    const examStart = new Date(printEnd.getTime());
+    const examEnd = new Date(examStart.getTime() + 45 * 60 * 1000); // 45 mins exam
+    const submissionEnd = new Date(examEnd.getTime() + 60 * 60 * 1000); // 1 hour upload
+
+    const newWorksheet: Worksheet = {
+      id: 'WS_' + Math.floor(1000 + Math.random() * 9000),
+      classId,
+      className: classObj.className,
+      section: classObj.section,
+      schoolId: classObj.schoolId,
+      generatedByRole: user.role,
+      generatedByEmail: user.email,
+      generationWindow: {
+        start: generationWindow.start,
+        teacherPriorityEnd: generationWindow.teacherPriorityEnd,
+        end: generationWindow.end,
+        generatedByRole: user.role,
+        generatedByEmail: user.email
+      },
+      cycle,
+      date: todayStr,
+      questions: compiledQuestions,
+      locks: {
+        locked: true,
+        lockedByRole: user.role,
+        lockedByEmail: user.email,
+        timestamp: now.toISOString()
+      },
+      timing: {
+        examDate: todayStr,
+        printWindowStart: printStart.toISOString(),
+        printWindowEnd: printEnd.toISOString(),
+        examWindowStart: examStart.toISOString(),
+        examWindowEnd: examEnd.toISOString(),
+        submissionWindowEnd: submissionEnd.toISOString()
+      },
+            delayLogs: {
+        delayedAttemptsCount: 0,
+        submittingTeachers: []
+      },
+    };
+    
+
+    await dbStore.addWorksheet(newWorksheet);
+
+    await dbStore.updateGenerationWindow(generationWindow.id, {
+      generatedByRole: user.role,
+      generatedByEmail: user.email
+    });
+    await dbStore.addLog({
+      id: 'log_' + Date.now(),
+      timestamp: now.toISOString(),
+      schoolId: classObj.schoolId,
+      schoolName: school.name,
+      userId: user.id,
+      userEmail: user.email,
+      userRole: user.role,
+      activityType: 'download',
+      status: 'Success',
+      details: `Generated personalized worksheets for ${classObj.className} ${classObj.section}. Locked pairwise role.`
+    });
+
+    res.json(newWorksheet);
+  });
+
+  // Generate printable PDF for an existing worksheet (connects 93 FLN levels with diagnostic pipeline)
+  app.post('/api/worksheets/generate-pdf', async (req, res) => {
+    const user = getAuthUser(req);
+    if (!user) return res.status(401).json({ error: 'Unauthorized' });
+
+    const { worksheetId } = req.body;
+    if (!worksheetId) {
+      return res.status(400).json({ error: 'worksheetId is required.' });
+    }
+
+    const worksheets = await dbStore.getWorksheets();
+    const ws = worksheets.find(w => w.id === worksheetId);
+    if (!ws) return res.status(404).json({ error: 'Worksheet not found.' });
+
+    const students = await dbStore.getStudents();
+    const classStudents = students.filter(
+      s => s.classGroup === ws.className && s.section === ws.section && s.schoolId === ws.schoolId
+    );
+
+    const studentsWithQuestions = classStudents.map(s => {
+      const studentQuestions = ws.questions.filter(q => q.question_id.startsWith(s.id + '_'));
+      return {
+        studentId: s.id,
+        name: s.name,
+        currentLevel: s.currentLevel,
+        currentSubLevel: s.currentSubLevel || 0,
+        questions: studentQuestions
+      };
+    }).filter(s => s.questions.length > 0);
+
+    if (studentsWithQuestions.length === 0) {
+      return res.status(400).json({ error: 'No student questions found in this worksheet.' });
+    }
+
+    try {
+      const { renderWorksheetPdf } = await import('../paperGenerator');
+      const result = await renderWorksheetPdf({
+        worksheetId,
+        className: ws.className,
+        section: ws.section,
+        cycle: ws.cycle,
+        studentsWithQuestions
+      });
+      res.json({ success: true, pdfUrl: result.pdfUrl });
+    } catch (err: any) {
+      console.error('Worksheet PDF generation failed:', err);
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // Issue #601: a worksheet for a chosen set of concepts. Content comes from the
+  // concepts' approved templates (resolveWorksheetContent, #600) and is printed
+  // by renderConceptWorksheet (#602). Nothing is saved: the same request gives
+  // the same sheet again.
+  const CONCEPT_BATCH_ROLES = new Set<UserRole>([UserRole.SUPERADMIN, UserRole.SCHOOL, UserRole.TEACHER, UserRole.VOLUNTEER]);
+  const MAX_QUESTIONS_PER_BATCH = 200;
+
+  // The fixed question count and level scope of each paper type (#593). Any
+  // signed-in user may read it; it holds no student data.
+  app.get('/api/paper-types/config', (req, res) => {
+    if (!getAuthUser(req)) return res.status(401).json({ error: 'Unauthorized' });
+    res.json({ paperTypes: Object.values(PAPER_TYPE_CONFIG) });
+  });
+
+  app.get('/api/paper-types/:type/config', (req, res) => {
+    if (!getAuthUser(req)) return res.status(401).json({ error: 'Unauthorized' });
+    const config = getPaperTypeConfig(req.params.type);
+    if (!config) return res.status(404).json({ error: `Unknown paper type. Use one of: ${Object.keys(PAPER_TYPE_CONFIG).join(', ')}.` });
+    res.json(config);
+  });
+
+  app.post('/api/worksheets/generate-concept-batch', async (req, res) => {
+    const user = getAuthUser(req);
+    if (!user) return res.status(401).json({ error: 'Unauthorized' });
+    if (!CONCEPT_BATCH_ROLES.has(user.role)) {
+      return res.status(403).json({ error: 'Only a teacher, volunteer, principal or superadmin can create a concept worksheet.' });
+    }
+
+    const { conceptIds, className, section, seed, paperType } = req.body ?? {};
+    let questionsPerConcept = req.body?.questionsPerConcept;
+    // A paper type fixes the total number of questions (#593); the route
+    // spreads it over the chosen concepts, so the caller need not send a count.
+    let paperTypeConfig: ReturnType<typeof getPaperTypeConfig>;
+    let countsByConcept: Record<string, number> | undefined;
+    if (paperType !== undefined) {
+      paperTypeConfig = typeof paperType === 'string' ? getPaperTypeConfig(paperType) : undefined;
+      if (!paperTypeConfig) {
+        return res.status(400).json({ error: `Unknown paperType. Use one of: ${Object.keys(PAPER_TYPE_CONFIG).join(', ')}.` });
+      }
+      const ids = Array.isArray(conceptIds) ? [...new Set(conceptIds.map((c: unknown) => String(c).trim()))] : [];
+      if (ids.length === 0 || ids.length > paperTypeConfig.questionCount) {
+        return res.status(400).json({ error: `A ${paperTypeConfig.paperType} paper needs between 1 and ${paperTypeConfig.questionCount} different concepts.` });
+      }
+      const counts = spreadQuestionCount(paperTypeConfig.questionCount, ids.length);
+      countsByConcept = Object.fromEntries(ids.map((id, i) => [id, counts[i]]));
+      questionsPerConcept = Math.max(...counts);
+    }
+    const classNameText = typeof className === 'string' ? className.trim() : '';
+    const sectionText = typeof section === 'string' ? section.trim() : '';
+    if (!classNameText || classNameText.length > 40 || !sectionText || sectionText.length > 10) {
+      return res.status(400).json({ error: 'className (up to 40 characters) and section (up to 10 characters) are required.' });
+    }
+    if (seed !== undefined && (typeof seed !== 'string' || seed.length === 0 || seed.length > 60)) {
+      return res.status(400).json({ error: 'seed must be a text of 1 to 60 characters.' });
+    }
+
+    let content;
+    try {
+      const { resolveWorksheetContent } = await import('../services/worksheetContent');
+      const distinct = Array.isArray(conceptIds) ? new Set(conceptIds.map(c => String(c).trim())).size : 0;
+      if (!paperTypeConfig && Number.isInteger(questionsPerConcept) && distinct * questionsPerConcept > MAX_QUESTIONS_PER_BATCH) {
+        return res.status(400).json({ error: `A concept worksheet can hold at most ${MAX_QUESTIONS_PER_BATCH} questions.` });
+      }
+      content = await resolveWorksheetContent(conceptIds, questionsPerConcept, { ...(seed ? { seed } : {}), ...(countsByConcept ? { countsByConcept } : {}) });
+    } catch (err: any) {
+      if (err instanceof RangeError) return res.status(400).json({ error: err.message });
+      console.error('Concept worksheet content failed:', err);
+      return res.status(500).json({ success: false, error: 'Could not prepare the worksheet content.' });
+    }
+
+    const summary = content.concepts.map(c => ({
+      conceptId: c.conceptId, level: getLevelForConcept(c.conceptId)?.levelNumber ?? null,
+      requested: c.requested, produced: c.questions.length, shortfall: c.shortfall ?? null,
+    }));
+    if (content.questions.length === 0) {
+      return res.status(404).json({
+        error: 'None of the chosen concepts has an approved question that can be printed.',
+        concepts: summary,
+      });
+    }
+
+    try {
+      const { renderConceptWorksheet } = await import('../paperGenerator');
+      const result = await renderConceptWorksheet({
+        worksheetId: `CW_${randomUUID().slice(0, 8)}`,
+        className: classNameText,
+        section: sectionText,
+        conceptIds: content.concepts.map(c => c.conceptId),
+        resolvedQuestions: content.questions,
+      });
+      res.json({
+        success: true, pdfUrl: result.pdfUrl, questionCount: content.questions.length, concepts: summary,
+        ...(paperTypeConfig ? {
+          paperType: paperTypeConfig.paperType,
+          expectedQuestionCount: paperTypeConfig.questionCount,
+          complete: content.questions.length === paperTypeConfig.questionCount,
+        } : {}),
+      });
+    } catch (err: any) {
+      console.error('Concept worksheet PDF failed:', err);
+      res.status(500).json({ success: false, error: 'Could not create the worksheet PDF.' });
+    }
+  });
+
+  // Generate Personalized Level-Wise Worksheet PDF for a single student.
+  // Pipeline: build a 1-entry roster -> Levels_backend /api/generate-batch
+  // -> poll /api/batch-status -> fetch /api/download-batch (zip) -> extract
+  // worksheet.pdf + answer_key.json + coords.json -> persist here.
+  app.post('/api/worksheets/generate-level-pdf', async (req, res) => {
+    const user = getAuthUser(req);
+    if (!user) return res.status(401).json({ error: 'Unauthorized' });
+
+    const { studentId } = req.body;
+    if (!studentId) {
+      return res.status(400).json({ error: 'studentId is required.' });
+    }
+
+    try {
+      const students = await dbStore.getStudents();
+      const student = students.find(s => s.id === studentId);
+      if (!student) return res.status(404).json({ error: 'Student not found.' });
+
+      if (student.currentLevel == null) {
+        return res.status(400).json({ error: 'Student has not completed their diagnostic test.' });
+      }
+
+      // Per-student generation lock. This route renders a personalized
+      // worksheet PDF for a single student. It is treated as the
+      // diagnostic-level paper for the current academic year
+      // (paperType='diagnostic', cycle='Baseline'). A second call for the
+      // same student is blocked with 409. Remedial / Practice are not
+      // generated through this route.
+      //
+      // See .hermes/plans/2026-09-02_161544-per-student-level-pdf-lock.md
+      const existingLocks = await dbStore.getStudentCycleLocks();
+      const lockAttempt = recordStudentCycleLock(existingLocks, {
+        studentId,
+        paperType: 'diagnostic',
+        cycle: 'Baseline',
+        generatedByEmail: user.email,
+        generatedByRole: user.role,
+      });
+      // The helper returns a discriminated union. After the !ok check we
+      // are in the failure branch — assert the type to read `existing`.
+      if (!lockAttempt.ok) {
+        const blocked = lockAttempt as { ok: false; existing: { generatedByEmail: string; createdAt: string } };
+        return res.status(409).json({
+          error: `Lock Active: This student already has a diagnostic paper (generated by ${blocked.existing.generatedByEmail} on ${blocked.existing.createdAt}). One per-student paper per cycle is allowed; re-generate is blocked.`,
+          lockDetails: lockAttempt,
+        });
+      }
+      await dbStore.addStudentCycleLock(lockAttempt.lock);
+
+      try {
+        const generated = await generateLevelWorksheetsViaLevelsBackend([student]);
+        if (generated.length === 0) {
+          throw new Error('Levels_backend returned no files for this student.');
+        }
+        res.json({ success: true, pdfUrl: generated[0].pdfUrl });
+      } catch (levelsBackendErr: any) {
+        // Deterministic fallback: the old in-process Puppeteer generator,
+        // so the button keeps working if Levels_backend is unreachable.
+        console.error('Levels_backend generation failed, falling back to local generator:', levelsBackendErr.message);
+        const { generateLevelWorksheet } = await import('../paperGenerator');
+        const result = await generateLevelWorksheet({
+          studentId: student.id,
+          studentName: student.name,
+          levelId: student.currentLevel,
+          subIdx: student.currentSubLevel || 0
+        });
+        res.json({ success: true, pdfUrl: result.pdfUrl, fallback: true });
+      }
+    } catch (err: any) {
+      console.error('Level worksheet generation failed:', err);
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // Generate Personalized Level-Wise Worksheets for a whole roster of
+  // students in ONE batch call to Levels_backend (the "Generate Batch"
+  // button in the teacher dashboard's Level-Wise Paper Generator panel).
+  app.post('/api/worksheets/generate-level-batch', async (req, res) => {
+    const user = getAuthUser(req);
+    if (!user) return res.status(401).json({ error: 'Unauthorized' });
+
+    const { studentIds } = req.body;
+    if (!Array.isArray(studentIds) || studentIds.length === 0) {
+      return res.status(400).json({ error: 'studentIds must be a non-empty array.' });
+    }
+
+    try {
+      const students = await dbStore.getStudents();
+      const targets: Student[] = [];
+      const skipped: Array<{ studentId: string; reason: string }> = [];
+
+      for (const id of studentIds) {
+        const student = students.find(s => s.id === id);
+        if (!student) {
+          skipped.push({ studentId: id, reason: 'Student not found.' });
+          continue;
+        }
+        if (student.currentLevel == null) {
+          skipped.push({ studentId: id, reason: 'Student has not completed their diagnostic test.' });
+          continue;
+        }
+        targets.push(student);
+      }
+
+      if (targets.length === 0) {
+        return res.status(400).json({ error: 'No eligible (placed) students in this request.', skipped });
+      }
+
+      const generated = await generateLevelWorksheetsViaLevelsBackend(targets, { includeBatchId: true });
+
+      const results = generated.map(g => ({
+        studentId: g.studentId,
+        studentName: g.studentName,
+        sublevelId: g.sublevelId,
+        setNum: g.setNum,
+        pdfUrl: g.pdfUrl
+      }));
+
+      res.json({
+        success: true,
+        batchId: generated[0]?.batchId || null,
+        studentsProcessed: targets.length,
+        totalFiles: generated.length,
+        results,
+        skipped
+      });
+    } catch (err: any) {
+      console.error('Level-wise batch generation failed:', err);
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // Streams the raw batch ZIP straight from Levels_backend, for the
+  // "Download Batch ZIP" button. No transformation — pass-through.
+  app.get('/api/worksheets/download-batch/:batchId', async (req, res) => {
+    try {
+      const zipBuffer = await levelsBackendClient.downloadBatchZip(req.params.batchId);
+      res.setHeader('Content-Type', 'application/zip');
+      res.setHeader('Content-Disposition', `attachment; filename="batch_${req.params.batchId}.zip"`);
+      res.send(zipBuffer);
+    } catch (err: any) {
+      console.error('Batch ZIP download failed:', err);
+      res.status(502).json({ error: err.message });
+    }
+  });
+}

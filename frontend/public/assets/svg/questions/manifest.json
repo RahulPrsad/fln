@@ -1,0 +1,349 @@
+{
+  "version": 1,
+  "note": "Stable ids referenced by QuestionTemplate.svgThemeIds and Question.svgThemeId. The database stores ids only; the artwork lives here.",
+  "themes": [
+    {
+      "id": "fruits",
+      "label": "Fruits",
+      "variants": [
+        {
+          "variantId": "apple",
+          "file": "fruits--apple.svg"
+        },
+        {
+          "variantId": "pear",
+          "file": "fruits--pear.svg"
+        },
+        {
+          "variantId": "banana",
+          "file": "fruits--banana.svg"
+        },
+        {
+          "variantId": "orange",
+          "file": "fruits--orange.svg"
+        },
+        {
+          "variantId": "grapes",
+          "file": "fruits--grapes.svg"
+        },
+        {
+          "variantId": "strawberry",
+          "file": "fruits--strawberry.svg"
+        }
+      ],
+      "supportedAnswerShapes": [
+        "single-number",
+        "fill-blanks",
+        "mcq-4"
+      ],
+      "printSafe": true,
+      "viewBox": "0 0 64 64"
+    },
+    {
+      "id": "vegetables",
+      "label": "Vegetables",
+      "variants": [
+        {
+          "variantId": "carrot",
+          "file": "vegetables--carrot.svg"
+        },
+        {
+          "variantId": "pepper",
+          "file": "vegetables--pepper.svg"
+        },
+        {
+          "variantId": "tomato",
+          "file": "vegetables--tomato.svg"
+        },
+        {
+          "variantId": "peas",
+          "file": "vegetables--peas.svg"
+        },
+        {
+          "variantId": "aubergine",
+          "file": "vegetables--aubergine.svg"
+        },
+        {
+          "variantId": "pumpkin",
+          "file": "vegetables--pumpkin.svg"
+        }
+      ],
+      "supportedAnswerShapes": [
+        "single-number",
+        "fill-blanks",
+        "mcq-4"
+      ],
+      "printSafe": true,
+      "viewBox": "0 0 64 64"
+    },
+    {
+      "id": "animals",
+      "label": "Animals",
+      "variants": [
+        {
+          "variantId": "cat",
+          "file": "animals--cat.svg"
+        },
+        {
+          "variantId": "bird",
+          "file": "animals--bird.svg"
+        },
+        {
+          "variantId": "elephant",
+          "file": "animals--elephant.svg"
+        },
+        {
+          "variantId": "rabbit",
+          "file": "animals--rabbit.svg"
+        },
+        {
+          "variantId": "turtle",
+          "file": "animals--turtle.svg"
+        },
+        {
+          "variantId": "butterfly",
+          "file": "animals--butterfly.svg"
+        }
+      ],
+      "supportedAnswerShapes": [
+        "single-number",
+        "fill-blanks",
+        "mcq-4"
+      ],
+      "printSafe": true,
+      "viewBox": "0 0 64 64"
+    },
+    {
+      "id": "pets",
+      "label": "Pets",
+      "variants": [
+        {
+          "variantId": "dog",
+          "file": "pets--dog.svg"
+        },
+        {
+          "variantId": "fish",
+          "file": "pets--fish.svg"
+        },
+        {
+          "variantId": "hamster",
+          "file": "pets--hamster.svg"
+        }
+      ],
+      "supportedAnswerShapes": [
+        "single-number",
+        "fill-blanks",
+        "mcq-4"
+      ],
+      "printSafe": true,
+      "viewBox": "0 0 64 64"
+    },
+    {
+      "id": "vehicles",
+      "label": "Vehicles",
+      "variants": [
+        {
+          "variantId": "car",
+          "file": "vehicles--car.svg"
+        },
+        {
+          "variantId": "bus",
+          "file": "vehicles--bus.svg"
+        },
+        {
+          "variantId": "bicycle",
+          "file": "vehicles--bicycle.svg"
+        },
+        {
+          "variantId": "boat",
+          "file": "vehicles--boat.svg"
+        },
+        {
+          "variantId": "train",
+          "file": "vehicles--train.svg"
+        }
+      ],
+      "supportedAnswerShapes": [
+        "single-number",
+        "fill-blanks",
+        "mcq-4"
+      ],
+      "printSafe": true,
+      "viewBox": "0 0 64 64"
+    },
+    {
+      "id": "street-furniture",
+      "label": "Street furniture",
+      "variants": [
+        {
+          "variantId": "streetlight",
+          "file": "street-furniture--streetlight.svg"
+        },
+        {
+          "variantId": "sign",
+          "file": "street-furniture--sign.svg"
+        },
+        {
+          "variantId": "bench",
+          "file": "street-furniture--bench.svg"
+        },
+        {
+          "variantId": "bin",
+          "file": "street-furniture--bin.svg"
+        }
+      ],
+      "supportedAnswerShapes": [
+        "single-number",
+        "fill-blanks",
+        "mcq-4"
+      ],
+      "printSafe": true,
+      "viewBox": "0 0 64 64"
+    },
+    {
+      "id": "buildings",
+      "label": "Buildings",
+      "variants": [
+        {
+          "variantId": "house",
+          "file": "buildings--house.svg"
+        },
+        {
+          "variantId": "school",
+          "file": "buildings--school.svg"
+        },
+        {
+          "variantId": "hut",
+          "file": "buildings--hut.svg"
+        }
+      ],
+      "supportedAnswerShapes": [
+        "single-number",
+        "fill-blanks",
+        "mcq-4"
+      ],
+      "printSafe": true,
+      "viewBox": "0 0 64 64"
+    },
+    {
+      "id": "clothing",
+      "label": "Clothing",
+      "variants": [
+        {
+          "variantId": "shirt",
+          "file": "clothing--shirt.svg"
+        },
+        {
+          "variantId": "shoe",
+          "file": "clothing--shoe.svg"
+        },
+        {
+          "variantId": "cap",
+          "file": "clothing--cap.svg"
+        },
+        {
+          "variantId": "sock",
+          "file": "clothing--sock.svg"
+        }
+      ],
+      "supportedAnswerShapes": [
+        "single-number",
+        "fill-blanks",
+        "mcq-4"
+      ],
+      "printSafe": true,
+      "viewBox": "0 0 64 64"
+    },
+    {
+      "id": "flowers-trees",
+      "label": "Flowers and trees",
+      "variants": [
+        {
+          "variantId": "flower",
+          "file": "flowers-trees--flower.svg"
+        },
+        {
+          "variantId": "tree",
+          "file": "flowers-trees--tree.svg"
+        },
+        {
+          "variantId": "leaf",
+          "file": "flowers-trees--leaf.svg"
+        },
+        {
+          "variantId": "sunflower",
+          "file": "flowers-trees--sunflower.svg"
+        }
+      ],
+      "supportedAnswerShapes": [
+        "single-number",
+        "fill-blanks",
+        "mcq-4"
+      ],
+      "printSafe": true,
+      "viewBox": "0 0 64 64"
+    },
+    {
+      "id": "classroom-objects",
+      "label": "Classroom objects",
+      "variants": [
+        {
+          "variantId": "pencil",
+          "file": "classroom-objects--pencil.svg"
+        },
+        {
+          "variantId": "book",
+          "file": "classroom-objects--book.svg"
+        },
+        {
+          "variantId": "ruler",
+          "file": "classroom-objects--ruler.svg"
+        },
+        {
+          "variantId": "bag",
+          "file": "classroom-objects--bag.svg"
+        },
+        {
+          "variantId": "scissors",
+          "file": "classroom-objects--scissors.svg"
+        }
+      ],
+      "supportedAnswerShapes": [
+        "single-number",
+        "fill-blanks",
+        "mcq-4"
+      ],
+      "printSafe": true,
+      "viewBox": "0 0 64 64"
+    },
+    {
+      "id": "mixed",
+      "label": "Mixed",
+      "variants": [
+        {
+          "variantId": "circle",
+          "file": "mixed--circle.svg"
+        },
+        {
+          "variantId": "square",
+          "file": "mixed--square.svg"
+        },
+        {
+          "variantId": "triangle",
+          "file": "mixed--triangle.svg"
+        },
+        {
+          "variantId": "star",
+          "file": "mixed--star.svg"
+        }
+      ],
+      "supportedAnswerShapes": [
+        "single-number",
+        "fill-blanks",
+        "mcq-4"
+      ],
+      "printSafe": true,
+      "viewBox": "0 0 64 64"
+    }
+  ]
+}

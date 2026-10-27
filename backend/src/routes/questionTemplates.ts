@@ -1,0 +1,730 @@
+import express from 'express';
+import { randomUUID } from 'crypto';
+import { dbStore, QuestionTemplate, QuestionTemplateStatus, QUESTION_TEMPLATE_STATUSES } from '../db';
+import { requireSuperadmin } from './superadminGuard';
+import { getLevel, isSkillMappedToLevel, isSubskillUnderSkills, buildLevelMapPayload, LEVEL_COUNT, listStages, resolveStage } from '../config/skillLevelMap';
+import { getLevelForConcept } from '../config/curriculumMap';
+import {
+  QuestionTemplateParams,
+  QuestionFamily,
+  ParamMode,
+  coerceParams,
+  validateParams,
+  validateGenerationIntent,
+  deriveTemplateName,
+  variantKeyFor,
+  getParamCatalog,
+  QUESTION_COUNT_DEFAULT,
+  QUESTION_FAMILIES,
+  MAX_SVG_THEMES,
+} from '../types/questionTemplateParams';
+import { isKnownThemeId, listThemes } from '../svgAssetCatalog';
+import { buildQuestionTemplateDownload } from '../services/questionTemplateDownload';
+import { isValidErrorTag } from '../errorTags';
+
+const MAX_NAME_CHARS = 200;
+const MAX_TAGS = 20;
+const MAX_TAG_CHARS = 40;
+/** Cap on one import. Large enough for a curriculum batch, small enough to stay a single round trip. */
+const MAX_IMPORT_ROWS = 1000;
+const ASSESSMENT_MODES = ['written', 'observed', 'both'] as const;
+
+const SUBJECT = 'question templates';
+
+/**
+ * Narrow an incoming status to the closed set, or null.
+ *
+ * Kept separate from `validateTemplate` because status is not part of what
+ * makes a template well-formed — it is the gate #486's generator reads — and
+ * a PATCH that only moves a row to `pendingApproval` should not have to
+ * re-prove that its skills map to its concept.
+ */
+function parseStatus(value: unknown): QuestionTemplateStatus | null {
+  if (typeof value !== 'string') return null;
+  return (QUESTION_TEMPLATE_STATUSES as readonly string[]).includes(value)
+    ? (value as QuestionTemplateStatus)
+    : null;
+}
+
+/**
+ * Server-side validation of a whole template.
+ *
+ * The client's cascading dropdowns make an invalid combination hard to pick,
+ * but they cannot make it impossible to send, and the CSV import has no
+ * dropdowns at all. A template filed against a concept that cannot host its
+ * skills would go on to produce questions assessing something the level never
+ * claimed to teach, so this is the real guard.
+ *
+ * Returns an error string, or null when the template is valid.
+ */
+function validateTemplate(
+  conceptId: string,
+  skills: string[],
+  subskills: string[],
+  generationIntent: string,
+  questionFamily: string,
+  svgThemeIds: string[],
+  answerSpec: string,
+  params: QuestionTemplateParams,
+  tags: string[],
+  name: string
+): string | null {
+  if (typeof conceptId !== 'string' || conceptId.trim().length === 0) {
+    return 'conceptId is required.';
+  }
+  const concept = getLevelForConcept(conceptId.trim());
+  if (!concept) return `Concept ${conceptId} is not present in the curriculum map.`;
+
+  const levelInfo = getLevel(concept.levelNumber);
+  if (!levelInfo) return `Concept ${conceptId} resolves to L${concept.levelNumber}, which is not in the skill map.`;
+
+  // Defensive: every level in the map should carry at least one skill. If one
+  // does not, say so plainly rather than letting the "skill not mapped" error
+  // below imply the author picked wrongly.
+  if (levelInfo.skills.length === 0) {
+    return `L${concept.levelNumber} has no skills mapped to it, so no question can be authored for it.`;
+  }
+
+  if (!Array.isArray(skills) || skills.length === 0) return 'At least one skill is required.';
+  for (const sk of skills) {
+    if (!isSkillMappedToLevel(sk, concept.levelNumber)) {
+      return `Skill ${sk} is not mapped to L${concept.levelNumber}.`;
+    }
+  }
+
+  if (!Array.isArray(subskills)) return 'subskills must be an array.';
+  for (const ss of subskills) {
+    if (!isSubskillUnderSkills(ss, skills)) {
+      return `Sub-skill ${ss} is not under any of the selected skills.`;
+    }
+  }
+
+  const intentProblem = validateGenerationIntent(generationIntent);
+  if (intentProblem) return intentProblem;
+
+  if (!(QUESTION_FAMILIES as readonly string[]).includes(questionFamily)) {
+    return `questionFamily must be one of ${QUESTION_FAMILIES.join(', ')}.`;
+  }
+
+  // The answer is generated, never authored. Rejecting this outright rather
+  // than dropping it silently: an author who typed an answer believes it will
+  // be used, and quietly discarding it would be worse than saying no.
+  if ((answerSpec ?? '').trim().length > 0) {
+    return 'An answer cannot be authored here. The generator produces the answer from the intent and the options below.';
+  }
+
+  if (!Array.isArray(svgThemeIds)) return 'svgThemeIds must be an array.';
+  if (svgThemeIds.length > MAX_SVG_THEMES) {
+    return `At most ${MAX_SVG_THEMES} visual themes may be selected.`;
+  }
+  for (const t of svgThemeIds) {
+    if (typeof t !== 'string' || !isKnownThemeId(t)) {
+      return `Unknown visual theme "${t}".`;
+    }
+  }
+  // Extended 2026-09-19 alongside the new families: counting was the only
+  // family checked before, but shape/pattern/comparison/classification are
+  // exactly as visually-grounded -- a shape-tracing or pattern-extension
+  // item with no theme has nothing for the child to look at either.
+  // vocabulary/calendar/reasoning/sequencing can be legitimately text-only
+  // (e.g. a calendar-reading item can print its own calendar inline via the
+  // answer type rather than a theme asset), so they're not required here.
+  const VISUAL_FAMILIES: readonly string[] = ['counting', 'shape', 'pattern', 'comparison', 'classification'];
+  if (VISUAL_FAMILIES.includes(questionFamily) && svgThemeIds.length === 0) {
+    return `A ${questionFamily} question needs at least one visual theme, otherwise there is nothing for the child to look at.`;
+  }
+
+  if (name.length > MAX_NAME_CHARS) {
+    return `Name must be ${MAX_NAME_CHARS} characters or fewer.`;
+  }
+
+  if (!Array.isArray(tags)) return 'tags must be an array.';
+  if (tags.length > MAX_TAGS) return `A template may carry at most ${MAX_TAGS} tags.`;
+  for (const t of tags) {
+    if (typeof t !== 'string' || t.trim().length === 0) return 'tags must be non-empty strings.';
+    if (t.length > MAX_TAG_CHARS) return `Each tag must be ${MAX_TAG_CHARS} characters or fewer.`;
+  }
+
+  return validateParams(params);
+}
+
+/** Lowercased, trimmed, de-duplicated, order preserved. */
+function normalizeTags(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const t of raw) {
+    if (typeof t !== 'string') continue;
+    const tag = t.trim().toLowerCase();
+    if (tag.length === 0 || seen.has(tag)) continue;
+    seen.add(tag);
+    out.push(tag);
+  }
+  return out;
+}
+
+/**
+ * Build the stored row from validated inputs.
+ *
+ * Shared by the single-create route and the importer so that a row authored in
+ * the form and the same row imported from a CSV are byte-for-byte the same
+ * document, rather than two shapes that only mostly agree.
+ */
+export function resolveTemplateTopic(conceptId: string, questionFamily?: string, explicitTopic?: string): string | null {
+  if (explicitTopic && typeof explicitTopic === 'string' && explicitTopic.trim()) {
+    return explicitTopic.trim().toLowerCase();
+  }
+  if (questionFamily) {
+    const qf = questionFamily.toLowerCase();
+    if (qf === 'counting') return 'counting';
+    if (qf === 'shape' || qf === 'shapes') return 'shapes';
+    if (qf === 'pattern' || qf === 'patterns') return 'patterns';
+    if (qf === 'literacy') return 'literacy';
+  }
+  const concept = getLevelForConcept(conceptId);
+  if (concept?.strand) {
+    const strand = concept.strand.toLowerCase();
+    if (strand.includes('shape')) return 'shapes';
+    if (strand.includes('pattern')) return 'patterns';
+    if (strand.includes('literacy')) return 'literacy';
+    if (strand.includes('number') || strand.includes('count')) return 'counting';
+  }
+  return null;
+}
+
+function buildTemplate(
+  input: {
+    conceptId: string;
+    skills: string[];
+    subskills: string[];
+    generationIntent: string;
+    questionFamily: QuestionFamily;
+    svgThemeIds: string[];
+    params: QuestionTemplateParams;
+    name: string;
+    tags: string[];
+    errorTag?: string;
+    source: 'form' | 'csv';
+    /**
+     * Optional, defaults to 'approved' -- a Superadmin's own row is usable
+     * the moment it is written, which is how every template authored before
+     * this field existed behaves. 'draft'/'pendingApproval'/'rejected' are
+     * opt-in on new rows, and #451's workflow will drive them.
+     */
+    status?: QuestionTemplateStatus;
+    /**
+     * Optional, defaults to 'written' -- matches every template authored
+     * before this field existed (2026-09-19). The authoring form/CSV
+     * importer don't collect this yet; that's a real follow-up (letting a
+     * Superadmin actually choose observed-only for a Balvatika item), not
+     * something to infer here. Explicit callers can already pass it.
+     */
+    assessmentMode?: 'written' | 'observed' | 'both';
+  },
+  user: { id: string; email: string },
+  now: string
+): QuestionTemplate {
+  const concept = getLevelForConcept(input.conceptId)!;
+  const params = input.params;
+  return {
+    id: 'qtpl_' + randomUUID().slice(0, 8),
+    conceptId: input.conceptId,
+    levelNumber: concept.levelNumber,
+    levelName: getLevel(concept.levelNumber)!.capability,
+    skills: input.skills,
+    subskills: input.subskills,
+    assessmentMode: input.assessmentMode ?? 'written',
+    status: input.status ?? 'approved',
+    generationIntent: input.generationIntent.trim(),
+    questionFamily: input.questionFamily,
+    paramMode: 'structured',
+    svgThemeIds: input.svgThemeIds,
+    // Legacy columns stay present and empty on new rows. See QuestionTemplate.
+    stem: '',
+    answerSpec: '',
+    numeralRange: params.numeralRange,
+    digitCount: params.digitCount,
+    operations: params.operations,
+    maxOperandCount: params.maxOperandCount,
+    carryBehavior: params.carryBehavior,
+    borrowBehavior: params.borrowBehavior,
+    maxSumOrDifference: params.maxSumOrDifference,
+    answerType: params.answerType,
+    blankCount: params.blankCount,
+    questionCount: params.questionCount ?? QUESTION_COUNT_DEFAULT,
+    subjectCategory: params.subjectCategory,
+    name: input.name.trim() || deriveTemplateName(params),
+    variantKey: variantKeyFor(input.conceptId, params),
+    tags: input.tags,
+    errorTag: input.errorTag,
+    source: input.source,
+    createdBy: user.id,
+    createdByEmail: user.email,
+    createdAt: now,
+    updatedAt: now,
+    updatedBy: user.id,
+    updatedByEmail: user.email,
+    deletedAt: null,
+    deletedBy: null,
+  };
+}
+
+/**
+ * Minimal RFC 4180 reader: quoted fields, doubled quotes inside them, and
+ * newlines inside quotes. Hand-rolled because it is the only CSV in the
+ * backend and a dependency would be carried into every bundle for this.
+ */
+export function parseCsv(text: string): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let field = '';
+  let inQuotes = false;
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (inQuotes) {
+      if (ch === '"') {
+        if (text[i + 1] === '"') { field += '"'; i++; }
+        else inQuotes = false;
+      } else field += ch;
+      continue;
+    }
+    if (ch === '"') { inQuotes = true; continue; }
+    if (ch === ',') { row.push(field); field = ''; continue; }
+    if (ch === '\r') continue;
+    if (ch === '\n') { row.push(field); rows.push(row); row = []; field = ''; continue; }
+    field += ch;
+  }
+  row.push(field);
+  rows.push(row);
+
+  // Trailing newline produces one empty final row; blank lines anywhere are noise.
+  return rows.filter(r => r.some(c => c.trim().length > 0));
+}
+
+/** Pipe-separated list cell, e.g. "SK03|SK07". Empty cell means empty list. */
+function splitList(cell: string): string[] {
+  return (cell ?? '').split('|').map(s => s.trim()).filter(s => s.length > 0);
+}
+
+function cellOrNull(cell: string): string | null {
+  const v = (cell ?? '').trim();
+  return v.length === 0 ? null : v;
+}
+
+const CSV_COLUMNS = [
+  'conceptId', 'skills', 'subskills', 'generationIntent', 'questionFamily', 'svgThemeIds',
+  'numeralRange', 'digitCount', 'operations', 'maxOperandCount',
+  'carryBehavior', 'borrowBehavior', 'maxSumOrDifference',
+  'answerType', 'blankCount', 'questionCount', 'subjectCategory',
+  'name', 'tags',
+] as const;
+
+export function registerQuestionTemplateRoutes(app: express.Express) {
+  /** The legal values and context rules the form renders itself from. */
+  app.get('/api/question-templates/param-catalog', (req, res) => {
+    if (!requireSuperadmin(req, res, SUBJECT)) return;
+    res.json({ ...getParamCatalog(), svgThemes: listThemes() });
+  });
+
+  /** Levels, skills and sub-skills for the cascading pickers, in one call. */
+  app.get('/api/question-templates/level-map', (req, res) => {
+    if (!requireSuperadmin(req, res, SUBJECT)) return;
+    res.json(buildLevelMapPayload());
+  });
+
+  /** The header row the importer expects, so the form can offer a blank file. */
+  app.get('/api/question-templates/csv-template', (req, res) => {
+    if (!requireSuperadmin(req, res, SUBJECT)) return;
+    res.type('text/csv').send(CSV_COLUMNS.join(',') + '\n');
+  });
+
+  /** One download containing the unchanged import template and current references. */
+  app.get('/api/question-templates/csv-template.zip', async (req, res, next) => {
+    if (!requireSuperadmin(req, res, SUBJECT)) return;
+    try {
+      const raw = req.query.stage;
+      let stage: string | undefined;
+      if (raw !== undefined && raw !== '') {
+        stage = typeof raw === 'string' ? resolveStage(raw) ?? undefined : undefined;
+        if (!stage) return res.status(400).json({
+          error: 'Unknown stage.', validStages: listStages().map(s => s.label),
+        });
+      }
+      const archive = await buildQuestionTemplateDownload(CSV_COLUMNS, buildLevelMapPayload(), listThemes(), { stage });
+      const slug = stage ? '-' + listStages().find(s => s.stage === stage)!.label.toLowerCase().replace(/\s+/g, '-') : '';
+      res.setHeader('Cache-Control', 'no-store');
+      res.attachment(`question-authoring-template${slug}.zip`).type('application/zip').send(archive);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get('/api/question-templates/stats', async (req, res) => {
+    if (!requireSuperadmin(req, res, SUBJECT)) return;
+    res.json(await dbStore.getQuestionTemplateStats(LEVEL_COUNT));
+  });
+
+  app.get('/api/question-templates', async (req, res) => {
+    if (!requireSuperadmin(req, res, SUBJECT)) return;
+
+    const includeDeleted = req.query.includeDeleted === 'true';
+    let templates = await dbStore.getQuestionTemplates(includeDeleted);
+
+    const conceptId = req.query.conceptId as string | undefined;
+    if (conceptId) templates = templates.filter(t => t.conceptId === conceptId);
+
+    const skill = req.query.skill as string | undefined;
+    if (skill) templates = templates.filter(t => t.skills.includes(skill));
+
+    const subskill = req.query.subskill as string | undefined;
+    if (subskill) templates = templates.filter(t => t.subskills.includes(subskill));
+
+    const tag = req.query.tag as string | undefined;
+    if (tag) templates = templates.filter(t => t.tags.includes(tag.toLowerCase()));
+
+    const variantKey = req.query.variantKey as string | undefined;
+    if (variantKey) templates = templates.filter(t => t.variantKey === variantKey);
+
+    res.json(templates);
+  });
+
+  app.post('/api/question-templates', async (req, res) => {
+    const user = requireSuperadmin(req, res, SUBJECT);
+    if (!user) return;
+
+    const conceptId: string = (req.body?.conceptId ?? '').trim();
+    const skills: string[] = req.body?.skills ?? [];
+    const subskills: string[] = req.body?.subskills ?? [];
+    const generationIntent: string = req.body?.generationIntent ?? '';
+    const questionFamily: string = req.body?.questionFamily ?? 'operation';
+    const svgThemeIds: string[] = req.body?.svgThemeIds ?? [];
+    const answerSpec: string = req.body?.answerSpec ?? '';
+    const params = coerceParams(req.body);
+    const tags = normalizeTags(req.body?.tags);
+    const name: string = (req.body?.name ?? '').trim();
+
+    const rawMode = req.body?.assessmentMode;
+    if (rawMode !== undefined && !(ASSESSMENT_MODES as readonly unknown[]).includes(rawMode)) {
+      return res.status(400).json({ error: 'assessmentMode must be written, observed or both.' });
+    }
+    const assessmentMode: 'written' | 'observed' | 'both' = rawMode ?? 'written';
+    let status: QuestionTemplateStatus = 'approved';
+    if (req.body?.status !== undefined && req.body?.status !== null) {
+      const parsed = parseStatus(req.body.status);
+      if (!parsed) return res.status(400).json({ error: `status must be one of ${QUESTION_TEMPLATE_STATUSES.join(', ')}.` });
+      status = parsed;
+    }
+
+    const problem = validateTemplate(conceptId, skills, subskills, generationIntent, questionFamily, svgThemeIds, answerSpec, params, tags, name);
+    if (problem) return res.status(400).json({ error: problem });
+
+    const errorTag: string | undefined = req.body?.errorTag !== undefined && req.body?.errorTag !== null && String(req.body.errorTag).trim() !== ''
+      ? String(req.body.errorTag).trim()
+      : undefined;
+    if (errorTag) {
+      const topic = resolveTemplateTopic(conceptId, questionFamily, req.body?.topic);
+      if (!topic || !isValidErrorTag(topic, errorTag)) {
+        return res.status(400).json({ error: `Unknown error tag '${errorTag}'${topic ? ` for topic '${topic}'` : ''}.` });
+      }
+    }
+
+    const template = buildTemplate(
+      { conceptId, skills, subskills, generationIntent, questionFamily: questionFamily as QuestionFamily, assessmentMode, svgThemeIds, params, name, tags, errorTag, source: 'form', status },
+      user,
+      new Date().toISOString()
+    );
+
+    await dbStore.addQuestionTemplate(template);
+
+    // Not a rejection: two Superadmins may legitimately author the same
+    // variation with different stems. Reported so the author can see it rather
+    // than discovering the collision in a generated paper.
+    const siblings = (await dbStore.getQuestionTemplatesByVariantKey(template.variantKey))
+      .filter(t => t.id !== template.id);
+
+    res.status(201).json({
+      template,
+      duplicateVariants: siblings.map(t => ({ id: t.id, name: t.name, stem: t.stem })),
+    });
+  });
+
+  app.patch('/api/question-templates/:id', async (req, res) => {
+    const user = requireSuperadmin(req, res, SUBJECT);
+    if (!user) return;
+
+    const current = await dbStore.getQuestionTemplateById(req.params.id);
+    if (!current) return res.status(404).json({ error: 'Question template not found.' });
+    if (current.deletedAt) return res.status(400).json({ error: 'Cannot edit a deleted template.' });
+
+    // Fall back to the stored value for anything the caller did not send, so a
+    // partial PATCH is still validated as a whole document. This is what makes
+    // "change only the concept" fail loudly when the existing skills cannot
+    // live at the new level, instead of silently storing a mismatched pair.
+    const conceptId: string = (req.body?.conceptId ?? current.conceptId).trim();
+    const skills: string[] = req.body?.skills ?? current.skills;
+    const subskills: string[] = req.body?.subskills ?? current.subskills;
+    const generationIntent: string = req.body?.generationIntent ?? current.generationIntent ?? '';
+    const questionFamily: string = req.body?.questionFamily ?? current.questionFamily ?? 'operation';
+    const svgThemeIds: string[] = req.body?.svgThemeIds ?? current.svgThemeIds ?? [];
+    // Never inherit a legacy answer into a structured edit: that would fail the
+    // "no authored answer" rule on a row the author did not touch.
+    const answerSpec: string = req.body?.answerSpec ?? '';
+    const tags = req.body?.tags !== undefined ? normalizeTags(req.body.tags) : current.tags;
+    const params = coerceParams({ ...current, ...req.body });
+    const name: string = (req.body?.name ?? current.name).trim();
+
+    // Status moves on its own: an approval transition should not be blocked by
+    // (or require re-validating) the content of a row the author did not touch.
+    let status: QuestionTemplateStatus = current.status ?? 'approved';
+    if (req.body?.status !== undefined && req.body?.status !== null) {
+      const parsed = parseStatus(req.body.status);
+      if (!parsed) return res.status(400).json({ error: `status must be one of ${QUESTION_TEMPLATE_STATUSES.join(', ')}.` });
+      status = parsed;
+    }
+
+    const problem = validateTemplate(conceptId, skills, subskills, generationIntent, questionFamily, svgThemeIds, answerSpec, params, tags, name);
+    if (problem) {
+      // Make the concept-only case actionable rather than merely rejected.
+      if (req.body?.conceptId !== undefined && req.body?.skills === undefined && problem.includes('not mapped')) {
+        return res.status(400).json({
+          error: `Existing skills [${current.skills.join(', ')}] are not all mapped to ${conceptId}. Update skills in the same request.`,
+        });
+      }
+      return res.status(400).json({ error: problem });
+    }
+
+    const errorTag: string | undefined = req.body?.errorTag !== undefined
+      ? (req.body.errorTag && String(req.body.errorTag).trim() !== '' ? String(req.body.errorTag).trim() : undefined)
+      : current.errorTag;
+    if (errorTag) {
+      const topic = resolveTemplateTopic(conceptId, questionFamily, req.body?.topic);
+      if (!topic || !isValidErrorTag(topic, errorTag)) {
+        return res.status(400).json({ error: `Unknown error tag '${errorTag}'${topic ? ` for topic '${topic}'` : ''}.` });
+      }
+    }
+
+    const concept = getLevelForConcept(conceptId)!;
+    const rawMode = req.body?.assessmentMode;
+    if (rawMode !== undefined && !(ASSESSMENT_MODES as readonly unknown[]).includes(rawMode)) {
+      return res.status(400).json({ error: 'assessmentMode must be written, observed or both.' });
+    }
+    const assessmentMode: 'written' | 'observed' | 'both' =
+      rawMode ?? (current.assessmentMode ?? 'written');
+
+    // The name is the author's once they have edited it, so it is only
+    // re-derived when the caller explicitly asks or has left it empty.
+    const regenerate = req.body?.regenerateName === true || name.length === 0;
+
+    const updates: Partial<QuestionTemplate> = {
+      conceptId,
+      levelNumber: concept.levelNumber,
+      levelName: getLevel(concept.levelNumber)!.capability,
+      skills,
+      subskills,
+      assessmentMode,
+      generationIntent: generationIntent.trim(),
+      questionFamily: questionFamily as QuestionFamily,
+      paramMode: 'structured' as ParamMode,
+      status,
+      svgThemeIds,
+      numeralRange: params.numeralRange,
+      digitCount: params.digitCount,
+      operations: params.operations,
+      maxOperandCount: params.maxOperandCount,
+      carryBehavior: params.carryBehavior,
+      borrowBehavior: params.borrowBehavior,
+      maxSumOrDifference: params.maxSumOrDifference,
+      answerType: params.answerType,
+      blankCount: params.blankCount,
+      questionCount: params.questionCount ?? QUESTION_COUNT_DEFAULT,
+      subjectCategory: params.subjectCategory,
+      name: regenerate ? deriveTemplateName(params) : name,
+      variantKey: variantKeyFor(conceptId, params),
+      tags,
+      errorTag,
+      updatedAt: new Date().toISOString(),
+      updatedBy: user.id,
+      updatedByEmail: user.email,
+    };
+
+    const updated = await dbStore.updateQuestionTemplate(req.params.id, updates);
+    res.json(updated);
+  });
+
+  app.delete('/api/question-templates/:id', async (req, res) => {
+    const user = requireSuperadmin(req, res, SUBJECT);
+    if (!user) return;
+
+    const current = await dbStore.getQuestionTemplateById(req.params.id);
+    if (!current) return res.status(404).json({ error: 'Question template not found.' });
+    if (current.deletedAt) return res.json({ ok: true });
+
+    await dbStore.updateQuestionTemplate(req.params.id, {
+      deletedAt: new Date().toISOString(),
+      deletedBy: user.id,
+    });
+    res.json({ ok: true });
+  });
+
+  /**
+   * Bulk import from CSV.
+   *
+   * All-or-nothing by design. A partial import that writes the valid rows and
+   * rejects the rest leaves the author reconciling a half-written file against
+   * a list of errors by hand, which is harder than fixing the file and trying
+   * again. `dryRun` runs every check and writes nothing, so the same request
+   * doubles as the preview.
+   */
+  app.post('/api/question-templates/import', async (req, res) => {
+    const user = requireSuperadmin(req, res, SUBJECT);
+    if (!user) return;
+
+    const csv: string = req.body?.csv ?? '';
+    const dryRun: boolean = req.body?.dryRun === true;
+
+    if (typeof csv !== 'string' || csv.trim().length === 0) {
+      return res.status(400).json({ error: 'csv is required.' });
+    }
+
+    const rows = parseCsv(csv);
+    if (rows.length < 2) {
+      return res.status(400).json({ error: 'The file needs a header row and at least one data row.' });
+    }
+
+    const header = rows[0].map(h => h.trim());
+    const missing = CSV_COLUMNS.filter(c => !header.includes(c));
+    if (missing.length > 0) {
+      return res.status(400).json({ error: `Missing columns: ${missing.join(', ')}.` });
+    }
+
+    const dataRows = rows.slice(1);
+    if (dataRows.length > MAX_IMPORT_ROWS) {
+      return res.status(400).json({ error: `At most ${MAX_IMPORT_ROWS} rows per import; this file has ${dataRows.length}.` });
+    }
+
+    const col = (row: string[], name: string) => (row[header.indexOf(name)] ?? '').trim();
+    const now = new Date().toISOString();
+    const errors: Array<{ row: number; error: string }> = [];
+    const prepared: QuestionTemplate[] = [];
+
+    dataRows.forEach((row, i) => {
+      // +2 so the number matches what the author sees in a spreadsheet: one for
+      // the header, one because spreadsheets count from 1.
+      const rowNumber = i + 2;
+
+      const conceptId = col(row, 'conceptId');
+      const skills = splitList(col(row, 'skills'));
+      const subskills = splitList(col(row, 'subskills'));
+      const generationIntent = col(row, 'generationIntent');
+      const questionFamily = col(row, 'questionFamily') || 'operation';
+      const svgThemeIds = splitList(col(row, 'svgThemeIds'));
+      const answerSpec = col(row, 'answerSpec');
+      const tags = normalizeTags(splitList(col(row, 'tags')));
+      const name = col(row, 'name');
+
+      const params = coerceParams({
+        numeralRange: cellOrNull(col(row, 'numeralRange')),
+        digitCount: cellOrNull(col(row, 'digitCount')),
+        operations: splitList(col(row, 'operations')),
+        maxOperandCount: cellOrNull(col(row, 'maxOperandCount')),
+        carryBehavior: cellOrNull(col(row, 'carryBehavior')),
+        borrowBehavior: cellOrNull(col(row, 'borrowBehavior')),
+        maxSumOrDifference: cellOrNull(col(row, 'maxSumOrDifference')),
+        answerType: cellOrNull(col(row, 'answerType')),
+        blankCount: cellOrNull(col(row, 'blankCount')),
+        questionCount: cellOrNull(col(row, 'questionCount')),
+        subjectCategory: cellOrNull(col(row, 'subjectCategory')),
+      });
+
+      const problem = validateTemplate(conceptId, skills, subskills, generationIntent, questionFamily, svgThemeIds, answerSpec, params, tags, name);
+      if (problem) {
+        errors.push({ row: rowNumber, error: problem });
+        return;
+      }
+
+      prepared.push(buildTemplate(
+        { conceptId, skills, subskills, generationIntent, questionFamily: questionFamily as QuestionFamily, svgThemeIds, params, name, tags, source: 'csv' },
+        user,
+        now
+      ));
+    });
+
+    if (errors.length > 0) {
+      return res.status(400).json({
+        imported: 0,
+        rowsRead: dataRows.length,
+        errors,
+        error: `${errors.length} of ${dataRows.length} rows are invalid. Nothing was imported.`,
+      });
+    }
+
+    // Variations that already exist, and variations the file repeats within
+    // itself. Both are reported, neither blocks the import.
+    const withinFile = new Map<string, number>();
+    for (const t of prepared) withinFile.set(t.variantKey, (withinFile.get(t.variantKey) ?? 0) + 1);
+    const existingKeys: string[] = [];
+
+    const clean = (s: string) => (s ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
+    const fingerprint = (t: QuestionTemplate) => JSON.stringify([
+      t.variantKey,
+      clean(t.generationIntent),
+      [...(t.skills ?? [])].sort(),
+      [...(t.subskills ?? [])].sort(),
+      t.questionFamily,
+      [...(t.svgThemeIds ?? [])].sort(),
+    ]);
+
+    const existingFingerprints = new Set<string>();
+    for (const key of withinFile.keys()) {
+      const siblings = await dbStore.getQuestionTemplatesByVariantKey(key);
+      if (siblings.length > 0) {
+        existingKeys.push(key);
+        for (const s of siblings) {
+          existingFingerprints.add(fingerprint(s));
+        }
+      }
+    }
+
+    const toAdd: QuestionTemplate[] = [];
+    let skippedIdentical = 0;
+    for (const t of prepared) {
+      const fp = fingerprint(t);
+      if (existingFingerprints.has(fp)) {
+        skippedIdentical++;
+      } else {
+        existingFingerprints.add(fp);
+        toAdd.push(t);
+      }
+    }
+
+    if (dryRun) {
+      return res.json({
+        dryRun: true,
+        imported: 0,
+        rowsRead: dataRows.length,
+        wouldImport: toAdd.length,
+        wouldSkip: skippedIdentical,
+        skippedIdentical,
+        errors: [],
+        repeatedInFile: [...withinFile.entries()].filter(([, n]) => n > 1).map(([key, n]) => ({ variantKey: key, count: n })),
+        alreadyExists: existingKeys,
+        preview: toAdd.slice(0, 10).map(t => ({ conceptId: t.conceptId, name: t.name, stem: t.stem })),
+      });
+    }
+
+    if (toAdd.length > 0) {
+      await dbStore.addQuestionTemplates(toAdd);
+    }
+
+    res.status(201).json({
+      dryRun: false,
+      imported: toAdd.length,
+      skippedIdentical,
+      rowsRead: dataRows.length,
+      errors: [],
+      repeatedInFile: [...withinFile.entries()].filter(([, n]) => n > 1).map(([key, n]) => ({ variantKey: key, count: n })),
+      alreadyExists: existingKeys,
+    });
+  });
+}

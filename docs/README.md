@@ -2,6 +2,10 @@
 
 This directory documents the complete teacher workflow in the FLN Assessment Portal.
 
+## Start here: the curriculum
+
+[`Research/03-109-levels/`](../Research/03-109-levels/README.md) lists all 109 levels, 24 skills and 183 subskills (readable tables plus a CSV).
+
 ## Files
 
 | File | Description |
@@ -13,6 +17,8 @@ This directory documents the complete teacher workflow in the FLN Assessment Por
 | `teacher-icr-scanner.md` | Simulated ICR scanner with animated flow |
 | `teacher-api-endpoints.md` | All server API endpoints available to teacher |
 | `teacher-governance-rules.md` | SRS governance rules enforced for teachers |
+| `intern-dashboard-tasks.md` | Scoped specifications for intern dashboard improvement tasks (Issue #342) |
+| `curriculum-terminology-and-id-mapping.md` | Canonical curriculum terminology, immutable concept ID registry, legacy transition strategy, and ownership manifest (closes #348) |
 
 ## Quick Start
 

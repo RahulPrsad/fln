@@ -1,292 +1,144 @@
+import type { ScanPaperTemplate } from './scan.types';
+export * from './scan.types';
 import fs from 'fs/promises';
+import { readFileSync } from 'fs';
 import path from 'path';
-import { Db, MongoClient } from 'mongodb';
+import { fileURLToPath } from 'url';
+import bcrypt from 'bcrypt';
+import { MongoClient, Db, ClientSession } from 'mongodb';
+import { CURRICULUM_MAPPING } from './config/curriculumMap';
+import type { StudentCycleLock } from './paperLock';
+import type { ScanQualityResult } from './scanQuality';
+import type { QuestionFamily } from './types/questionTemplateParams';
+import type { ErrorType } from './errorClassification';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const DB_DIR = path.resolve(process.cwd(), 'data');
 const DB_FILE = path.resolve(DB_DIR, 'db.json');
 
-// Types & Interfaces corresponding to MongoDB Collections in SRS §10
-export enum UserRole {
-  SUPERADMIN = 'superadmin',
-  ADMIN = 'admin',
-  DISTRICT_ADMIN = 'district_admin',
-  BLOCK_ADMIN = 'block_admin',
-  SCHOOL = 'school',
-  TEACHER = 'teacher',
-  VOLUNTEER = 'volunteer'
+// Load seed competency requirements (SRS R-7). Falls back to [] if the file
+// is missing — server still boots, but eligibility decisions will be empty
+// (cert rows never transition to 'active' until seed data is restored).
+export function getSeedCompetencyRequirements(): CompetencyRequirement[] {
+  try {
+    const seedPath = path.resolve(__dirname, 'data', 'competencyRequirements.seed.json');
+    const raw = readFileSync(seedPath, 'utf-8');
+    return JSON.parse(raw) as CompetencyRequirement[];
+  } catch (err) {
+    console.error('Failed to load seed competency requirements:', err);
+    return [];
+  }
 }
 
-export interface User {
-  id: string;
-  email: string;
-  name: string;
-  role: UserRole;
-  stateCode?: string;
-  districtCode?: string;
-  blockCode?: string;
-  schoolId?: string;
-  assignedSchools?: string[]; // for Volunteers
-  phoneNumber?: string;
-  delayedAttemptsCount?: number;
-  isBanned?: boolean;
-}
+// Every seeded demo account shares one password, stored ONLY as a bcrypt hash
+// (never as plaintext). Defaults to the well-known demo password shown on the login
+// screen; override with SEED_DEMO_PASSWORD for a private deployment.
+export const SEED_DEMO_PASSWORD = process.env.SEED_DEMO_PASSWORD || 'Fln@2026';
+export const SEED_DEMO_PASSWORD_HASH = bcrypt.hashSync(SEED_DEMO_PASSWORD, 10);
 
-export interface School {
-  id: string;
-  name: string;
-  stateCode: string;
-  districtCode: string;
-  blockCode: string;
-  strength: 'high' | 'low'; // High-strength vs. Low-strength (§1.2)
-  teachersCount: number;
-  isAccessLocked?: boolean;
-}
+export let mongoClient: MongoClient | null = null;
 
-export interface ClassGroup {
-  id: string;
-  schoolId: string;
-  className: string; // e.g. "Class 2", "Class 3", "Class 4"
-  section: string; // e.g. "A", "B"
-  teacherId: string;
-}
+export const connectDB = async () => {
+  let uri = process.env.MONGODB_URI;
+  if (!uri) {
+    console.log("MONGODB_URI not set — using local DB");
+    return;
+  }
+  let connected = false;
+  let attempt = 1;
+  const maxAttempts = 3;
+  while (!connected && attempt <= maxAttempts) {
+    try {
+      mongoClient = new MongoClient(uri, {
+        serverSelectionTimeoutMS: 5000,
+        connectTimeoutMS: 8000,
+      });
+      await mongoClient.connect();
+      // Test ping to verify active MongoDB connection
+      await mongoClient.db().command({ ping: 1 });
+      console.log("MongoDB Connected");
+      dbStore.useMongo = true;
+      connected = true;
+    } catch (err: any) {
+      console.error(`MongoDB connection attempt ${attempt}/${maxAttempts} failed: ${err.message}`);
+      attempt++;
+      if (attempt <= maxAttempts) {
+        await new Promise(r => setTimeout(r, 2000));
+      }
+    }
+  }
 
-export interface Student {
-  id: string;
-  name: string;
-  age: number;
-  classGroup: string; // "Class 2" | "Class 3" | "Class 4"
-  section: string;
-  schoolId: string;
-  teacherId?: string;
-  currentLevel: number;
-  currentSubLevel?: number;
-  targetLevel: number;
-  aadharMasked: string; // Mandatory, unique identifier masked (§13.2 R-6)
-  levelHistory: { level: number; subLevel?: number; date: string; reason: string }[];
-  streak: number;
-}
+  if (!connected) {
+    console.warn("Could not connect to remote MongoDB — falling back to local file DB so server runs reliably.");
+    mongoClient = null;
+  }
+};
 
-export interface Question {
-  question_id: string;
-  question: string;
-  answer: string;
-  answer_type: 'text' | 'number' | 'choice';
-  question_format?: 'text' | 'multiple_choice' | 'match_pair' | 'fill_blank';
-  choices?: string[];
-  topic: string;
-  subtopic: string;
-  difficulty: 'easy' | 'medium' | 'hard';
-  source_level: number; // Mapping to mathematical level
-  svgAsset?: string; // Standard pre-built SVG asset category
-}
 
-export interface ScanRoiRect {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
+// Domain types live in dedicated modules under backend/src. db.ts retains the
+// database implementation and re-exports the domain types for backwards
+// compatibility with existing routes and services that still import them from
+// './db'.
+export * from './identity.types';
+export * from './student.types';
+export * from './curriculum.types';
+export * from './assessment.types';
+export * from './evaluation.types';
+export * from './operations.types';
 
-export interface ScanTemplateQuestion {
-  questionId: string;
-  questionLabel: string;
-  questionType: NonNullable<Question['question_format']>;
-  prompt: string;
-  answerKey: string;
-  answerType: Question['answer_type'];
-  choices?: string[];
-  marks: number;
-  autoScoreEligible: boolean;
-  questionBox: ScanRoiRect;
-  answerBoxes: ScanRoiRect[];
-  anchor: ScanRoiRect;
-}
+import { UserRole } from './identity.types';
+import type {
+  User,
+  School,
+  ClassGroup,
+} from './identity.types';
+import type {
+  Student,
+  TestHistoryEntry,
+} from './student.types';
+import type {
+  Question,
+  QuestionBankEntry,
+  QuestionLogic,
+  QuestionTemplate,
+  QuestionOption,
+  CurriculumLevel,
+  CandidateSkill,
+  CandidateSkillStatus,
+  CandidateSkillEvidence,
+  Skill,
+  SkillSourceType,
+  SkillValidationStatus,
+} from './curriculum.types';
+import type {
+  LevelWorksheet,
+  DiagnosticAnswerKey,
+  LevelHtmlTemplate,
+  Worksheet,
+  AnswerSubmission,
+  TeacherObservationRecord,
+  WorksheetGenerationWindow,
+  AttemptRecord,
+} from './assessment.types';
+import type { EvaluationReport } from './evaluation.types';
 
-export interface ScanPaperTemplate {
-  templateVersion: 'scan-template-v3';
-  qrSchema: 'studentId|paperId|testId|pageNumber';
-  studentId: string;
-  studentName: string;
-  paperId: string;
-  testId: string;
-  pageNumber: number;
-  pageCount: number;
-  page: {
-    size: 'A4';
-    width: number;
-    height: number;
-    unit: 'pt';
-    coordinateOrigin: 'top-left';
-  };
-  qrPayload: string;
-  fiducials: {
-    topLeft: ScanRoiRect;
-    topRight: ScanRoiRect;
-    bottomLeft: ScanRoiRect;
-    bottomRight: ScanRoiRect;
-  };
-  questions: ScanTemplateQuestion[];
-  generatedAt: string;
-  pdfFileName: string;
-  templateFileName: string;
-}
+import type {
+  Certification,
+  CertificationStatus,
+  CompetencyRequirement,
+  MasteryLevel,
+  Ticket,
+  LogEntry,
+  Announcement,
+  Intervention,
+  BestPractice,
+  MisconceptionCluster,
+} from './operations.types';
+import { emitKeypressEvents } from 'readline';
 
-export interface LevelWorksheet {
-  id: string;
-  batchId: string;
-  studentId: string;
-  studentName: string;
-  rollNumber: string;
-  levelId: number;
-  sublevelId: string;
-  setNum: number;
-  pdfUrl: string;
-  answerKey: unknown;
-  coords: unknown;
-  generatedAt: string;
-}
 
-export interface Worksheet {
-  id: string; // Exam ID
-  classId: string;
-  className: string;
-  section: string;
-  schoolId: string;
-  generatedByRole: UserRole;
-  generatedByEmail: string;
-  cycle: 'Baseline' | 'Mid-year' | 'End-of-year';
-  date: string;
-  questions: Question[];
-  locks: {
-    locked: boolean;
-    lockedByRole: UserRole | null;
-    lockedByEmail: string | null;
-    timestamp: string | null;
-  };
-  timing: {
-    examDate: string; // e.g. "2026-07-06"
-    printWindowStart: string; // ISO String
-    printWindowEnd: string; // ISO String
-    examWindowStart: string; // ISO String
-    examWindowEnd: string; // ISO String
-    submissionWindowEnd: string; // ISO String
-  };
-  delayLogs: {
-    delayedAttemptsCount: number;
-    submittingTeachers: string[];
-  };
-}
-
-export interface AnswerSubmission {
-  id: string;
-  worksheetId: string;
-  studentId: string;
-  studentName: string;
-  schoolId: string;
-  classId: string;
-  submittedAt: string;
-  isDelayed: boolean;
-  answers: { [questionId: string]: string }; // Q1 -> A, Q2 -> 5, etc.
-}
-
-export interface EvaluationReport {
-  id: string;
-  studentId: string;
-  worksheetId: string;
-  score: number;
-  totalQuestions: number;
-  conceptMastery: { [topic: string]: 'Strong' | 'Needs Practice' | 'Satisfactory' };
-  narrative: string; // Narrative summary for parent/teacher
-  recommendedLevel: number;
-  recommendedSubLevel?: number;
-  timestamp: string;
-}
-
-export interface Ticket {
-  id: string;
-  userId: string;
-  userEmail: string;
-  userName: string;
-  userRole: UserRole;
-  type: 'general' | 'curriculum';
-  subject: string;
-  description: string;
-  status: 'Open' | 'Reviewed' | 'Resolved';
-  createdAt: string;
-}
-
-export interface LogEntry {
-  id: string;
-  timestamp: string;
-  schoolId: string;
-  schoolName: string;
-  userId: string;
-  userEmail: string;
-  userRole: UserRole;
-  activityType: 'download' | 'print' | 'conduct' | 'scan' | 'verify' | 'ticket';
-  status: 'Success' | 'Failed' | 'Delayed';
-  details: string;
-}
-
-export interface Announcement {
-  id: string;
-  title: string;
-  message: string;
-  isUrgent: boolean;
-  authorEmail: string;
-  createdAt: string;
-}
-
-export type InterventionStrategyType = 'small_group' | 'one_on_one' | 'peer_tutoring' | 'visual_aids' | 'manipulatives' | 'worksheets' | 'game_based' | 'other';
-
-export interface Intervention {
-  id: string;
-  studentId: string;
-  studentName: string;
-  teacherId: string;
-  teacherName: string;
-  schoolId: string;
-  classId: string;
-  className: string;
-  section: string;
-  weakCompetencies: string[];
-  currentLevel: number;
-  strategyType: InterventionStrategyType;
-  strategyDescription: string;
-  duration: string;
-  startDate: string;
-  endDate?: string;
-  status: 'active' | 'completed' | 'pending_review';
-  outcome?: {
-    improved: boolean;
-    previousLevel: number;
-    newLevel?: number;
-    improvementDetails?: string;
-    assessmentId?: string;
-    detectedAt?: string;
-  };
-  isPromoted: boolean;
-  promotedAt?: string;
-  createdAt: string;
-}
-
-export interface BestPractice {
-  id: string;
-  interventionId: string;
-  teacherId: string;
-  teacherName: string;
-  schoolId: string;
-  weakCompetencies: string[];
-  strategyType: string;
-  strategyDescription: string;
-  levelBefore: number;
-  levelAfter: number;
-  levelJump: number;
-  duration: string;
-  tags: string[];
-  viewCount: number;
-  createdAt: string;
-}
 
 interface DatabaseSchema {
   users: User[];
@@ -297,6 +149,8 @@ interface DatabaseSchema {
   scanPaperTemplates: ScanPaperTemplate[];
   worksheets: Worksheet[];
   levelWorksheets: LevelWorksheet[];
+  levelHtmlTemplates: LevelHtmlTemplate[];
+  questionBank: QuestionBankEntry[];
   answerSubmissions: AnswerSubmission[];
   evaluationReports: EvaluationReport[];
   tickets: Ticket[];
@@ -304,377 +158,2757 @@ interface DatabaseSchema {
   announcements: Announcement[];
   interventions: Intervention[];
   bestPractices: BestPractice[];
+  diagnosticAnswerKeys: DiagnosticAnswerKey[];
+  certifications: Certification[];
+  competencyRequirements: CompetencyRequirement[];
+  misconceptionClusters: MisconceptionCluster[];
+  testHistory: TestHistoryEntry[];
+  questionLogics: QuestionLogic[];
+  questionTemplates: QuestionTemplate[];
+  questionOptions: QuestionOption[];
+  curriculumLevels: CurriculumLevel[];
+  studentCycleLocks: StudentCycleLock[];
+  generationWindows: WorksheetGenerationWindow[];
+  teacherObservationRecords: TeacherObservationRecord[];
+  attemptRecords: AttemptRecord[];
+  candidateSkills: CandidateSkill[];
+  skills: Skill[];
+}
+
+const COLLECTION_NAMES: Record<keyof DatabaseSchema, string> = {
+  users: 'users',
+  schools: 'schools',
+  classes: 'classes',
+  students: 'students',
+  questions: 'questions',
+  scanPaperTemplates: 'scanPaperTemplates',
+  worksheets: 'worksheets',
+  levelWorksheets: 'levelWorksheets',
+  levelHtmlTemplates: 'levelHtmlTemplates',
+  questionBank: 'questionBank',
+  answerSubmissions: 'answerSubmissions',
+  evaluationReports: 'evaluationReports',
+  tickets: 'tickets',
+  logbook: 'logbook',
+  announcements: 'announcements',
+  interventions: 'interventions',
+  bestPractices: 'bestPractices',
+  diagnosticAnswerKeys: 'diagnostic_answer_keys',
+  certifications: 'certifications',
+  competencyRequirements: 'competencyRequirements',
+  misconceptionClusters: 'misconception_clusters',
+  testHistory: 'testHistory',
+  questionLogics: 'questionLogics',
+  questionTemplates: 'questionTemplates',
+  questionOptions: 'questionOptions',
+  curriculumLevels: 'curriculumLevels',
+  studentCycleLocks: 'studentCycleLocks',
+  generationWindows: 'generationWindows',
+  teacherObservationRecords: 'teacher_observation_records',
+  attemptRecords: 'attempt_records',
+  candidateSkills: 'candidate_skills',
+  skills: 'skills',
+};
+
+/**
+ * Aadhaar-sensitive fields that may ONLY be written by the tokenized creation
+ * path (routes/students.ts → createStudentFromData via addStudent). Every key
+ * that could carry a raw number, a vault reference, or the mask is listed so
+ * updateStudent()'s generic $set can never reintroduce plaintext or clobber
+ * vault references through a future, less careful caller.
+ *
+ * Deliberately broader than the Student interface: includes legacy/spelling
+ * variants (`aadhar`, `aadhaarNumber`) that a well-meaning future contributor
+ * might reach for.
+ */
+const AADHAAR_PROTECTED_UPDATE_FIELDS: readonly string[] = [
+  'aadhaar',
+  'aadhar',
+  'aadharNumber',
+  'aadhaarNumber',
+  'aadhaarTokenId',
+  'aadhaarIdentityId',
+  'aadharMasked',
+];
+
+/**
+ * Collapse multiple `Question` rows that share the same `question_id` into a
+ * single row, comma-joining their `answer` values so no information is lost.
+ *
+ * The diagnostic paper can be assembled from several sources (cached
+ * `assignedDiagnosticQuestions`, the freshly-generated class paper, the
+ * `questionBank` collection). When those paths overlap the same question
+ * can appear more than once. Without deduping, the OCR scan would treat
+ * the duplicate as a separate row, inflate the total count, and silently
+ * double-count correct/incorrect in the donut.
+ *
+ * Behavior:
+ *   - First occurrence of each `question_id` wins for the metadata fields
+ *     (conceptId, source_level, topic, ...).
+ *   - Subsequent duplicates contribute their `answer` value to a comma-
+ *     separated list on the merged row (de-duplicated within the join so
+ *     the same answer string isn't repeated).
+ *   - Order of the original list is preserved (first-seen order), so
+ *     downstream iteration matches the paper the student was actually shown.
+ */
+export function dedupeQuestionsById(questions: Question[]): Question[] {
+  const byId = new Map<string, Question>();
+  const order: string[] = [];
+  for (const q of questions) {
+    const id = q.question_id;
+    if (!id) continue;
+    if (!byId.has(id)) {
+      order.push(id);
+      byId.set(id, { ...q });
+      continue;
+    }
+    const existing = byId.get(id)!;
+    const parts = new Set<string>();
+    const existingParts = String(existing.answer ?? '').split(',').map(s => s.trim()).filter(Boolean);
+    existingParts.forEach(p => parts.add(p));
+    const incoming = String(q.answer ?? '').split(',').map(s => s.trim()).filter(Boolean);
+    incoming.forEach(p => parts.add(p));
+    existing.answer = Array.from(parts).join(', ');
+  }
+  return order.map(id => byId.get(id)!);
 }
 
 export class DBStore {
   private data: DatabaseSchema | null = null;
-  private saveQueue: Promise<void> = Promise.resolve();
-  public useMongo = false;
-  private mongoClient: MongoClient | null = null;
+  public useMongo: boolean = false;
   private mongoDb: Db | null = null;
 
-  getDb() {
-    return this.mongoDb;
+  getDb(): Db | null {
+    if (this.mongoDb) return this.mongoDb;
+    if (mongoClient) {
+      const dbName = process.env.MONGODB_DB_NAME;
+      this.mongoDb = dbName ? mongoClient.db(dbName) : mongoClient.db();
+      return this.mongoDb;
+    }
+    return null;
+  }
+
+  // Generic key-value config store. Keys are arbitrary strings; values
+  // are arbitrary JSON-serializable blobs. Stored in MongoDB collection
+  // `appConfig` ({_id: key, value}). Used for runtime config like
+  // ICR_CLOUD_API_KEY_GOOGLE etc that admins set via the API instead
+  // of environment variables.
+  async getConfig(key: string): Promise<any> {
+    const db = this.getDb();
+    if (!db) return null;
+    const doc = await db.collection('appConfig').findOne({ _id: key } as any);
+    return doc?.value ?? null;
+  }
+
+  async setConfig(key: string, value: any): Promise<void> {
+    const db = this.getDb();
+    if (!db) throw new Error('MongoDB not connected');
+    await db.collection('appConfig').updateOne(
+      { _id: key } as any,
+      { $set: { value, updatedAt: new Date() } },
+      { upsert: true }
+    );
   }
 
   async init() {
-    const mongoUri = (process.env.MONGO_URI || process.env.MONGODB_URI)?.trim();
-    if (mongoUri) {
-      await this.initMongo(mongoUri);
-      return;
-    }
+    if (mongoClient) {
+      try {
+        const dbName = process.env.MONGODB_DB_NAME;
+        this.mongoDb = dbName ? mongoClient.db(dbName) : mongoClient.db();
+        this.data = {} as DatabaseSchema;
+        const db = this.mongoDb;
 
-    try {
-      await fs.mkdir(DB_DIR, { recursive: true });
-    } catch (_) {}
-
-    try {
-      const content = await fs.readFile(DB_FILE, 'utf-8');
-      this.data = JSON.parse(content);
-      
-      // Auto-merge any newly defined pre-seeded users, schools, classes, and students
-      const seed = this.getSeedData();
-      let modified = false;
-
-      if (!this.data.users) {
-        this.data.users = [];
-        modified = true;
-      }
-      for (const u of seed.users) {
-        if (!this.data.users.some(existing => existing.email.toLowerCase() === u.email.toLowerCase())) {
-          this.data.users.push(u);
-          modified = true;
-        }
-      }
-
-      if (!this.data.schools) {
-        this.data.schools = [];
-        modified = true;
-      }
-      for (const s of seed.schools) {
-        if (!this.data.schools.some(existing => existing.id === s.id)) {
-          this.data.schools.push(s);
-          modified = true;
-        }
-      }
-
-      if (!this.data.classes) {
-        this.data.classes = [];
-        modified = true;
-      }
-      for (const c of seed.classes) {
-        if (!this.data.classes.some(existing => existing.id === c.id)) {
-          this.data.classes.push(c);
-          modified = true;
-        }
-      }
-
-      if (!this.data.students) {
-        this.data.students = [];
-        modified = true;
-      }
-      for (const std of seed.students) {
-        if (!this.data.students.some(existing => existing.id === std.id)) {
-          this.data.students.push(std);
-          modified = true;
-        }
-      }
-
-      if (!this.data.announcements) {
-        this.data.announcements = [];
-        modified = true;
-      }
-      if (!this.data.tickets) {
-        this.data.tickets = [];
-        modified = true;
-      }
-      if (!this.data.logbook) {
-        this.data.logbook = [];
-        modified = true;
-      }
-      if (!this.data.questions) {
-        this.data.questions = seed.questions;
-        modified = true;
-      } else {
-        for (const seedQuestion of seed.questions) {
-          const existing = this.data.questions.find(question => question.question_id === seedQuestion.question_id);
-          if (!existing) {
-            this.data.questions.push(seedQuestion);
-            modified = true;
-          } else if (!existing.question_format && seedQuestion.question_format) {
-            existing.question_format = seedQuestion.question_format;
-            modified = true;
+        // Ensure diagnostic_answer_keys collection is explicitly created in MongoDB
+        try {
+          const collections = await db.listCollections({ name: 'diagnostic_answer_keys' }).toArray();
+          if (collections.length === 0) {
+            await db.createCollection('diagnostic_answer_keys');
+            console.log('Explicitly created MongoDB collection "diagnostic_answer_keys"');
           }
+        } catch (e: any) {
+          console.warn('Collection check info:', e.message);
         }
-      }
-      if (!this.data.scanPaperTemplates) {
-        this.data.scanPaperTemplates = [];
-        modified = true;
-      }
-      if (!this.data.levelWorksheets) {
-        this.data.levelWorksheets = [];
-        modified = true;
-      }
-      if (!this.data.interventions) {
-        this.data.interventions = [];
-        modified = true;
-      }
-      if (!this.data.bestPractices) {
-        this.data.bestPractices = [];
-        modified = true;
-      }
 
-      if (modified) {
+        // Ensure indexes on students collection for performance
+        try {
+          const studentsColl = db.collection('students');
+          await studentsColl.createIndex({ id: 1 }, { unique: true });
+          await studentsColl.createIndex({ schoolId: 1 });
+          await studentsColl.createIndex({ teacherId: 1 });
+          await studentsColl.createIndex({ aadharMasked: 1 });
+          // Phase 2 hardening: layer-2 duplicate detection queries this field
+          // on every registration (routes/students.ts → getExistingAadhaar-
+          // IdentityIds). Deliberately NON-unique for now: legacy records may
+          // predate aadhaarIdentityId or contain duplicate values, and a
+          // unique constraint introduced blind would turn reads/writes of
+          // those rows into errors. Revisit uniqueness only after
+          // scripts/audit-aadhaar-at-rest.ts reports the data is clean.
+          await studentsColl.createIndex({ aadhaarIdentityId: 1 });
+          // Case-insensitive search indexes for the Aadhaar Reveal / admin
+          // student search. The route's $or uses BSON range ({$gte: $lt})
+          // on these six fields; the index collation lets the range scan
+          // be case-insensitive, and the index OR uses one IXSCAN per
+          // branch. Without these, an 86k-row collection would COLLSCAN
+          // on every keystroke. The same collation must be set on the
+          // cursor (see getStudents) — a strength:2 index compared with
+          // the simple-binary default ignores the index entirely.
+          // The choice of strength:2 (case + accent insensitive but
+          // still case-folded for ordering) is a deliberate compromise:
+          // full case+accent insensitive would be strength:1, but
+          // school/class identifiers do carry case information some
+          // admins rely on, and strength:1 would also make 'a' and 'ä'
+          // indistinguishable, which is wrong for names. Strength:2 is
+          // the standard for "case-insensitive prefix search".
+          const searchCollation = { locale: 'en', strength: 2 };
+          for (const f of ['name', 'displayId', 'aadharMasked', 'schoolId', 'classGroup', 'section']) {
+            await studentsColl.createIndex({ [f]: 1 }, { collation: searchCollation, name: f + '_ci' });
+          }
+          console.log('Successfully ensured indexes on "students" collection');
+        } catch (e: any) {
+          console.warn('Failed to ensure indexes on "students" collection:', e.message);
+        }
+
+        // Ensure indexes on users collection for performance
+        try {
+          const usersColl = db.collection('users');
+          await usersColl.createIndex({ id: 1 }, { unique: true });
+          await usersColl.createIndex({ email: 1 }, { unique: true });
+          console.log('Successfully ensured indexes on "users" collection');
+        } catch (e: any) {
+          console.warn('Failed to ensure indexes on "users" collection:', e.message);
+        }
+
+        // Ensure indexes on the authoring collections.
+        //
+        // `questionLogics` has never carried any index, including on `id`,
+        // which `getQuestionLogicById` queries by. Added here alongside the
+        // new collection rather than left for later.
+        try {
+          const logicsColl = db.collection('questionLogics');
+          await logicsColl.createIndex({ id: 1 }, { unique: true });
+
+          const templatesColl = db.collection('questionTemplates');
+          await templatesColl.createIndex({ id: 1 }, { unique: true });
+          await templatesColl.createIndex({ conceptId: 1, deletedAt: 1 });
+          await templatesColl.createIndex({ variantKey: 1, deletedAt: 1 });
+          await templatesColl.createIndex({ tags: 1, deletedAt: 1 });
+          await templatesColl.createIndex({ paramMode: 1, deletedAt: 1 });
+          // Multikey indexes: "which questions test skill X" / "...subskill X" is a
+          // direct index lookup, not a table scan across every question×skill pair —
+          // the key-value structure this collection already is, made queryable by it.
+          await templatesColl.createIndex({ skills: 1, deletedAt: 1 });
+          await templatesColl.createIndex({ subskills: 1, deletedAt: 1 });
+          await templatesColl.createIndex({ assessmentMode: 1, deletedAt: 1 });
+
+          const optionsColl = db.collection('questionOptions');
+          await optionsColl.createIndex({ id: 1 }, { unique: true });
+          await optionsColl.createIndex({ type: 1, active: 1 });
+
+          // Balvatika teacher-observation records (PR #517 §4/§4b) — see the
+          // TeacherObservationRecord interface for why this is a separate
+          // collection from answerSubmissions.
+          const obsColl = db.collection('teacher_observation_records');
+          await obsColl.createIndex({ id: 1 }, { unique: true });
+          await obsColl.createIndex({ studentId: 1, conceptId: 1, cycle: 1 }, { unique: true });
+          await obsColl.createIndex({ classId: 1, cycle: 1 });
+          await obsColl.createIndex({ conceptId: 1 });
+
+          console.log('Successfully ensured indexes on the question authoring collections');
+        } catch (e: any) {
+          console.warn('Failed to ensure indexes on the question authoring collections:', e.message);
+        }
+
+        // Ensure indexes on evaluationReports collection for performance
+        try {
+          const reportsColl = db.collection('evaluationReports');
+          await reportsColl.createIndex({ studentId: 1 });
+          console.log('Successfully ensured indexes on "evaluationReports" collection');
+        } catch (e: any) {
+          console.warn('Failed to ensure indexes on "evaluationReports" collection:', e.message);
+        }
+
+        // #479: getAttemptRecordsForStudent is the only read today, keyed
+        // by studentId.
+        try {
+          await db.collection('attempt_records').createIndex({ studentId: 1 });
+          console.log('Successfully ensured indexes on "attempt_records" collection');
+        } catch (e: any) {
+          console.warn('Failed to ensure indexes on "attempt_records" collection:', e.message);
+        }
+
+        // Ensure indexes on D1.6 candidate_skills and skills collections (#481)
+        try {
+          const candColl = db.collection('candidate_skills');
+          await candColl.createIndex({ id: 1 }, { unique: true });
+          await candColl.createIndex({ parentSkillId: 1 });
+          await candColl.createIndex({ status: 1 });
+
+          const skillsColl = db.collection('skills');
+          await skillsColl.createIndex({ id: 1 }, { unique: true });
+          await skillsColl.createIndex({ parentSkillId: 1 });
+          await skillsColl.createIndex({ validationStatus: 1 });
+          console.log('Successfully ensured indexes on "candidate_skills" and "skills" collections');
+        } catch (e: any) {
+          console.warn('Failed to ensure indexes on "candidate_skills" and "skills" collections:', e.message);
+        }
+
+        for (const [key, collName] of Object.entries(COLLECTION_NAMES)) {
+          (this.data as any)[key] = [];
+        }
+        // Load users into memory for sync auth lookups (getUserSync)
+        this.data.users = await db.collection<User>('users').find({}, { projection: { password: 0 } }).toArray();
+        const userCount = this.data.users.length;
+        const schoolCount = await db.collection('schools').countDocuments();
+        const studentCount = await db.collection('students').countDocuments();
+
+        // If MongoDB Atlas users collection is empty, merge local seed users into memory without modifying MongoDB
+        if (userCount === 0) {
+          const seed = this.getSeedData();
+          this.data.users = seed.users;
+        }
+        console.log(`MongoDB ready: ${userCount} users in Atlas (${this.data.users.length} active), ${schoolCount} schools, ${studentCount} students`);
+        return;
+      } catch (err: any) {
+        console.warn(`MongoDB initialization failed (${err.message}) — falling back to local file DB.`);
+        this.mongoDb = null;
+        mongoClient = null;
+      }
+    } else {
+      console.log('No MongoDB — falling back to file-based DB');
+      try {
+        await fs.mkdir(DB_DIR, { recursive: true });
+      } catch (_) { }
+      try {
+        const content = await fs.readFile(DB_FILE, 'utf-8');
+        const parsed = JSON.parse(content);
+        // A db.json written before a collection was added to DatabaseSchema
+        // has no key for it, so the file-store branches below would throw on
+        // `this.data.<collection>.push(...)`. Default any missing collection
+        // to empty; COLLECTION_NAMES is typed to list every schema key.
+        for (const key of Object.keys(COLLECTION_NAMES) as (keyof DatabaseSchema)[]) {
+          if (!Array.isArray(parsed[key])) parsed[key] = [];
+        }
+        this.data = parsed;
+      } catch (_) {
+        this.data = this.getSeedData();
         await this.save();
       }
-    } catch (_) {
-      // If DB file does not exist, pre-seed data
-      this.data = this.getSeedData();
-      await this.save();
     }
-  }
-
-  private async initMongo(mongoUri: string) {
-    const maxAttempts = 3;
-    let lastError: unknown;
-
-    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-      const client = new MongoClient(mongoUri, {
-        connectTimeoutMS: 15000,
-        serverSelectionTimeoutMS: 15000
-      });
-
-      try {
-        await client.connect();
-        const mongoDb = client.db();
-        await mongoDb.command({ ping: 1 });
-
-        const seed = this.getSeedData();
-        const names = Object.keys(seed) as Array<keyof DatabaseSchema>;
-        for (const name of names) {
-          const collection = mongoDb.collection(String(name));
-          if (await collection.countDocuments() === 0 && seed[name].length > 0) {
-            await collection.insertMany(seed[name] as any[]);
-          }
-        }
-
-        this.data = {} as DatabaseSchema;
-        for (const name of names) {
-          this.data[name] = await mongoDb.collection(String(name)).find({}).toArray() as any;
-        }
-
-        this.mongoClient = client;
-        this.mongoDb = mongoDb;
-        this.useMongo = true;
-        console.log(`[Database] Connected to MongoDB database "${mongoDb.databaseName}".`);
-        return;
-      } catch (error) {
-        lastError = error;
-        await client.close().catch(() => undefined);
-        if (attempt < maxAttempts) {
-          await new Promise(resolve => setTimeout(resolve, attempt * 2000));
-        }
-      }
-    }
-
-    throw lastError instanceof Error ? lastError : new Error('MongoDB connection failed.');
   }
 
   private async save() {
     if (!this.data) return;
-    const snapshot = structuredClone(this.data);
-    this.saveQueue = this.saveQueue.then(async () => {
-      if (this.mongoDb) {
-        for (const name of Object.keys(snapshot) as Array<keyof DatabaseSchema>) {
-          const collection = this.mongoDb.collection(String(name));
-          await collection.deleteMany({});
-          if (snapshot[name].length > 0) await collection.insertMany(snapshot[name] as any[]);
-        }
-        return;
-      }
-      await fs.writeFile(DB_FILE, JSON.stringify(snapshot, null, 2), 'utf-8');
-    });
-    await this.saveQueue;
+    await fs.writeFile(DB_FILE, JSON.stringify(this.data, null, 2), 'utf-8');
+  }
+
+  private async persistCollection(key: keyof DatabaseSchema) {
+    if (!this.data || !mongoClient) return;
+    const db = this.getDb();
+    if (!db) return;
+    const collName = COLLECTION_NAMES[key];
+    const items = (this.data as any)[key] || [];
+    const coll = db.collection(collName);
+    await coll.deleteMany({});
+    if (items.length > 0) {
+      await coll.insertMany(items);
+    }
   }
 
   async reset() {
     this.data = this.getSeedData();
-    await this.save();
+    if (mongoClient) {
+      const db = this.getDb();
+      if (!db) return;
+      for (const [key, collName] of Object.entries(COLLECTION_NAMES)) {
+        const items = (this.data as any)[key] || [];
+        const coll = db.collection(collName);
+        await coll.deleteMany({});
+        if (items.length > 0) {
+          await coll.insertMany(items);
+        }
+      }
+    } else {
+      await this.save();
+    }
   }
 
   // --- Collection Accessors ---
 
-  async getUsers() { return this.data!.users; }
-  async getSchools() { return this.data!.schools; }
-  async getClasses() { return this.data!.classes; }
-  async getStudents() { return this.data!.students; }
-  async getQuestions() { return this.data!.questions; }
-  async getScanPaperTemplates() { return this.data!.scanPaperTemplates; }
-  async getScanPaperTemplate(paperId: string, pageNumber = 1) {
-    return this.data!.scanPaperTemplates.find(template => template.paperId === paperId && template.pageNumber === pageNumber);
-  }
-  async getWorksheets() { return this.data!.worksheets; }
-  async getLevelWorksheets() { return this.data!.levelWorksheets; }
-  async getAnswerSubmissions() { return this.data!.answerSubmissions; }
-  async getEvaluationReports() { return this.data!.evaluationReports; }
-  async getTickets() { return this.data!.tickets; }
-  async getLogbook() { return this.data!.logbook; }
-  async getAnnouncements() { return this.data!.announcements; }
-  async getInterventions() { return this.data!.interventions; }
-  async getBestPractices() { return this.data!.bestPractices; }
-
   getUserSync(email: string): User | null {
-    return this.data?.users.find(user => user.email.toLowerCase() === email.toLowerCase()) || null;
+    if (!this.data || !this.data.users) return null;
+    return this.data.users.find(u => u.email.toLowerCase() === email.toLowerCase()) || null;
+  }
+
+  async getUserByEmail(email: string): Promise<User | null> {
+    const cleanEmail = (email || '').trim().toLowerCase();
+    if (this.mongoDb) {
+      try {
+        // Anchored regex with the email field. The `email` field has a regular
+        // index from init(); a fully-anchored regex on an indexed field still
+        // scans the index, but the index is keyed on the value so it's bounded.
+        const u = await this.mongoDb.collection<User>('users').findOne({
+          email: { $regex: new RegExp(`^${cleanEmail.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&')}$`, 'i') }
+        });
+        if (u) {
+          if (this.data && this.data.users) {
+            const idx = this.data.users.findIndex(x => x.email.toLowerCase() === cleanEmail || x.id === u.id);
+            if (idx >= 0) this.data.users[idx] = u;
+            else this.data.users.push(u);
+          }
+          return u;
+        }
+      } catch (_) { }
+    }
+    return this.getUserSync(cleanEmail);
+  }
+
+  async getUsers() {
+    if (this.mongoDb) return await this.mongoDb.collection<User>('users').find({}).toArray();
+    return this.data?.users || [];
+  }
+  async getSchools() {
+    if (this.mongoDb) return await this.mongoDb.collection<School>('schools').find({}).toArray();
+    return this.data?.schools || [];
+  }
+  async getSchoolById(id: string): Promise<School | null> {
+    if (!id) return null;
+    if (this.mongoDb) return (await this.mongoDb.collection<School>('schools').findOne({ id })) as School | null;
+    return (this.data?.schools || []).find(sc => sc.id === id) ?? null;
+  }
+  async getClasses() {
+    if (this.mongoDb) return await this.mongoDb.collection<ClassGroup>('classes').find({}).toArray();
+    return this.data?.classes || [];
+  }
+  async getStudents(opts?: { limit?: number; offset?: number; schoolId?: string | string[]; teacherId?: string; sort?: 'latest'; q?: string }) {
+    // Search must run BEFORE limit/offset. A previous version of this
+    // function only sorted/paged, and the caller (routes/students.ts)
+    // applied the search AFTER the paged result had been returned. On an
+    // 86,400-row collection that meant a search match at position 500
+    // would never appear in the page (the first 10 were the 10 most-recent
+    // inserts, with no guarantee any of them matched). The result was a
+    // panel that "did nothing" as the user typed. Pushing the search
+    // here means the same query Mongo/JS does is also the one that
+    // pagination slices.
+    const search = (opts?.q || '').trim().toLowerCase();
+    if (this.mongoDb) {
+      const filter: any = {};
+      if (opts?.schoolId) {
+        if (Array.isArray(opts.schoolId)) {
+          filter.schoolId = { $in: opts.schoolId };
+        } else {
+          filter.schoolId = opts.schoolId;
+        }
+      }
+      if (opts?.teacherId) filter.teacherId = opts.teacherId;
+      if (search) {
+        // Case-insensitive PREFIX match on the same six fields the panel
+        // advertises. The previous version used an unanchored case-insensitive
+        // regex (e.g. /foo/i), which CANNOT use a B-tree index in this
+        // MongoDB version — every keystroke COLLSCAN'd the 86k-row
+        // collection. The fix is a BSON range { $gte: prefix, $lt: prefix+'￿' }
+        // combined with a strength:2 collation on the cursor. Combined with
+        // the matching collation-aware indexes (see the `init()` block
+        // above), Mongo uses index OR (one IXSCAN per $or branch) and the
+        // search runs in single-digit ms.
+        //
+        // The semantic change is "prefix" instead of "substring" — typing
+        // "kar" still finds "Kartik", but typing "artik" no longer matches
+        // "Kartik" via a mid-string substring. This is the smallest
+        // architecturally correct change that preserves the user-typed
+        // search box; the API contract (the ?q= parameter) is unchanged.
+        // The in-memory (file-fallback) path below mirrors this with
+        // .startsWith() so dev and prod return the same results.
+        const prefix = search;
+        const upper = prefix + '￿';
+        filter.$or = [
+          { name:        { $gte: prefix, $lt: upper } },
+          { displayId:   { $gte: prefix, $lt: upper } },
+          { aadharMasked:{ $gte: prefix, $lt: upper } },
+          { schoolId:    { $gte: prefix, $lt: upper } },
+          { classGroup:  { $gte: prefix, $lt: upper } },
+          { section:     { $gte: prefix, $lt: upper } },
+        ];
+      }
+      const skip = opts?.offset || 0;
+      const limit = opts?.limit || 0;
+      const cursor = this.mongoDb.collection<Student>('students').find(filter);
+      // When the query has a search, use the same collation as the
+      // `*_ci` indexes above. Without this, Mongo falls back to the
+      // simple-binary collation, the index OR is unusable, and we
+      // COLLSCAN the whole collection. With it, index OR turns 6
+      // COLLSCANs into 6 IXSCANs (~1ms each on 86k rows).
+      if (search) cursor.collation({ locale: 'en', strength: 2 });
+      // `sort: 'latest'` returns most-recently-inserted first. In Mongo
+      // the natural `_id` ObjectId is time-prefixed, so a descending
+      // sort gives the same intent as "newest at the top" in the
+      // file-fallback store (where students are `push`ed to the array
+      // and we reverse the result). Other sort modes are intentionally
+      // not exposed — the route layer is the only place that names
+      // sort orders.
+      if (opts?.sort === 'latest') cursor.sort({ _id: -1 });
+      if (skip) cursor.skip(skip);
+      if (limit) cursor.limit(limit);
+      return await cursor.toArray();
+    }
+    let result = this.data?.students || [];
+    if (opts?.schoolId) {
+      const wanted = Array.isArray(opts.schoolId) ? opts.schoolId : [opts.schoolId];
+      result = result.filter(s => wanted.includes(s.schoolId));
+    }
+    if (opts?.teacherId) result = result.filter(s => s.teacherId === opts.teacherId);
+    if (search) {
+      // Same six fields, same case-insensitive PREFIX semantics as the
+      // Mongo $or above (see comment in the Mongo branch). The previous
+      // version used `.includes()` (substring); the new Mongo path is
+      // BSON range + collation, which is prefix-only. We mirror that
+      // here with `.startsWith()` so dev (file-fallback) and prod
+      // (Mongo) return the same rows for the same `q` — otherwise a
+      // dev who types "artik" sees "Kartik" in their file-fallback
+      // results but a prod deploy would not, and vice versa.
+      result = result.filter(s => {
+        const fields = [
+          s.name, s.displayId, s.aadharMasked, s.schoolId, s.classGroup, s.section,
+        ];
+        for (const v of fields) {
+          if (v != null && String(v).toLowerCase().startsWith(search)) return true;
+        }
+        return false;
+      });
+    }
+    // For the file-fallback store, students are appended to the array
+    // on insert, so the array is in chronological order. Reversing it
+    // gives "latest first" — matching the Mongo sort({ _id: -1 })
+    // path.
+    if (opts?.sort === 'latest') result = [...result].reverse();
+    if (opts?.offset) result = result.slice(opts.offset);
+    if (opts?.limit) result = result.slice(0, opts.limit);
+    return result;
+  }
+  /**
+   * One student by business id, without pulling the collection.
+   *
+   * `getStudents()` ships all 86k student documents to the caller; anything
+   * that needs a single child (archetype assignment runs once per evaluation,
+   * and once per student inside the bulk ICR loop) must not pay that.
+   */
+  async getStudentById(id: string): Promise<Student | null> {
+    if (this.mongoDb) {
+      return await this.mongoDb.collection<Student>('students').findOne({ id });
+    }
+    return (this.data?.students || []).find(s => s.id === id) || null;
+  }
+  async countStudents(opts?: { schoolId?: string | string[]; teacherId?: string; q?: string }) {
+    // Mirrors getStudents' search semantics so the route's X-Total-Count
+    // header reflects the full match count, not the post-pagination
+    // page count. The previous version took no `q` and the route fell
+    // back to `masked.length` (the post-page count) — same
+    // whole-collection / first-page mismatch that broke the search.
+    const search = (opts?.q || '').trim().toLowerCase();
+    if (this.mongoDb) {
+      const filter: any = {};
+      if (opts?.schoolId) filter.schoolId = Array.isArray(opts.schoolId) ? { $in: opts.schoolId } : opts.schoolId;
+      if (opts?.teacherId) filter.teacherId = opts.teacherId;
+      if (search) {
+        // Mirror the BSON-range + collation pattern from getStudents
+        // exactly. countStudents drives the route's X-Total-Count
+        // header, and it MUST match the page's filter — otherwise
+        // pagination shows the wrong total. With the same $or and
+        // the same collation, Mongo uses the same six IXSCANs as
+        // the find, so the count is also single-digit ms on 86k rows.
+        const prefix = search;
+        const upper = prefix + '￿';
+        filter.$or = [
+          { name:        { $gte: prefix, $lt: upper } },
+          { displayId:   { $gte: prefix, $lt: upper } },
+          { aadharMasked:{ $gte: prefix, $lt: upper } },
+          { schoolId:    { $gte: prefix, $lt: upper } },
+          { classGroup:  { $gte: prefix, $lt: upper } },
+          { section:     { $gte: prefix, $lt: upper } },
+        ];
+      }
+      // Same collation as the find; required for the *_ci indexes.
+      // Without the search path, countDocuments hits the existing
+      // schoolId/teacherId indexes and does not need a collation.
+      if (search) {
+        return await this.mongoDb.collection('students').countDocuments(filter, { collation: { locale: 'en', strength: 2 } });
+      }
+      return await this.mongoDb.collection('students').countDocuments(filter);
+    }
+    let result = this.data?.students || [];
+    if (opts?.schoolId) { const ids = ([] as string[]).concat(opts.schoolId); result = result.filter(s => ids.includes(s.schoolId)); }
+    if (opts?.teacherId) result = result.filter(s => s.teacherId === opts.teacherId);
+    if (search) {
+      // Same prefix-only semantics as getStudents' in-memory path.
+      result = result.filter(s => {
+        const fields = [
+          s.name, s.displayId, s.aadharMasked, s.schoolId, s.classGroup, s.section,
+        ];
+        for (const v of fields) {
+          if (v != null && String(v).toLowerCase().startsWith(search)) return true;
+        }
+        return false;
+      });
+    }
+    return result.length;
+  }
+
+
+  /**
+   * Fast aggregation: count of students, optionally filtered.
+   * Uses MongoDB countDocuments (uses index, no docs loaded).
+   */
+  async countStudentsFast(opts?: { schoolId?: string; currentLevelMin?: number }): Promise<number> {
+    if (this.mongoDb) {
+      const filter: any = {};
+      if (opts?.schoolId) filter.schoolId = opts.schoolId;
+      if (opts?.currentLevelMin != null) filter.currentLevel = { $gte: opts.currentLevelMin };
+      return await this.mongoDb.collection('students').countDocuments(filter);
+    }
+    let result = this.data?.students || [];
+    if (opts?.schoolId) result = result.filter(s => s.schoolId === opts.schoolId);
+    if (opts?.currentLevelMin != null) result = result.filter(s => (s.currentLevel || 0) >= opts.currentLevelMin!);
+    return result.length;
+  }
+
+  /** Fast count of schools with optional filters. */
+  async countSchoolsFast(opts?: { stateCode?: string; schoolType?: string; accessLocked?: boolean }): Promise<number> {
+    if (this.mongoDb) {
+      const filter: any = {};
+      if (opts?.stateCode) filter.stateCode = opts.stateCode;
+      if (opts?.schoolType) filter.schoolType = opts.schoolType;
+      if (opts?.accessLocked != null) filter.accessLocked = opts.accessLocked;
+      return await this.mongoDb.collection('schools').countDocuments(filter);
+    }
+    let result = (this.data?.schools || []) as any[];
+    if (opts?.stateCode) result = result.filter((s: any) => s.stateCode === opts!.stateCode);
+    if (opts?.schoolType) result = result.filter((s: any) => s.schoolType === opts!.schoolType);
+    if (opts?.accessLocked != null) result = result.filter((s: any) => s.accessLocked === opts!.accessLocked);
+    return result.length;
+  }
+
+  /** Fast count of users by role. Returns { role: count }. */
+  async countUsersByRole(): Promise<Record<string, number>> {
+    if (this.mongoDb) {
+      const result = await this.mongoDb.collection('users').aggregate([
+        { $group: { _id: '$role', count: { $sum: 1 } } }
+      ]).toArray();
+      const counts: Record<string, number> = {};
+      result.forEach(r => { counts[r._id] = r.count; });
+      return counts;
+    }
+    const counts: Record<string, number> = {};
+    (this.data?.users || []).forEach(u => {
+      const r = u.role || 'unknown';
+      counts[r] = (counts[r] || 0) + 1;
+    });
+    return counts;
+  }
+
+  /**
+   * Fast aggregation: school counts grouped by stateCode.
+   * Returns [{ stateCode, count }] sorted by count desc.
+   */
+  async countSchoolsByState(): Promise<Array<{ stateCode: string; count: number }>> {
+    if (this.mongoDb) {
+      const result = await this.mongoDb.collection('schools').aggregate([
+        { $group: { _id: '$stateCode', count: { $sum: 1 } } },
+        { $sort: { count: -1 } }
+      ]).toArray();
+      return result.map(r => ({ stateCode: r._id || 'UNKNOWN', count: r.count }));
+    }
+    const counts: Record<string, number> = {};
+    (this.data?.schools || []).forEach(s => {
+      const sc = s.stateCode || 'UNKNOWN';
+      counts[sc] = (counts[sc] || 0) + 1;
+    });
+    return Object.entries(counts)
+      .map(([stateCode, count]) => ({ stateCode, count }))
+      .sort((a, b) => b.count - a.count);
+  }
+
+  /** Fast aggregation: school counts grouped by schoolType. */
+  async countSchoolsByType(): Promise<Array<{ schoolType: string; count: number }>> {
+    if (this.mongoDb) {
+      const result = await this.mongoDb.collection('schools').aggregate([
+        { $group: { _id: '$schoolType', count: { $sum: 1 } } }
+      ]).toArray();
+      return result.map(r => ({ schoolType: r._id || 'Unknown', count: r.count }));
+    }
+    const counts: Record<string, number> = {};
+    ((this.data?.schools || []) as any[]).forEach(s => {
+      const t = s.schoolType || 'Unknown';
+      counts[t] = (counts[t] || 0) + 1;
+    });
+    return Object.entries(counts).map(([schoolType, count]) => ({ schoolType, count }));
+  }
+
+  /** Fast aggregation: student count per school (for ranking). Returns top N. */
+  async getSchoolStudentCounts(): Promise<Map<string, number>> {
+    if (this.mongoDb) {
+      const result = await this.mongoDb.collection('students').aggregate([
+        { $group: { _id: '$schoolId', count: { $sum: 1 }, avgLevel: { $avg: '$currentLevel' } } }
+      ]).toArray();
+      const map = new Map<string, number>();
+      result.forEach(r => { map.set(r._id, r.count); });
+      return map;
+    }
+    const counts = new Map<string, number>();
+    (this.data?.students || []).forEach(s => {
+      counts.set(s.schoolId, (counts.get(s.schoolId) || 0) + 1);
+    });
+    return counts;
+  }
+
+  /**
+   * Per-school evaluation aggregates, for the executive school table.
+   *
+   * One pipeline over `students` (indexed on `schoolId`) that looks each
+   * child's reports up through the `evaluationReports.studentId` index, so
+   * the whole table costs a single server-side query rather than one query
+   * per school.
+   *
+   * A report counts as passed when the child got at least half the questions
+   * right. `score` is a correct-answer count on every production writer
+   * (routes/evaluation.ts, routes/students.ts, the teacher-override endpoint)
+   * measured against `totalQuestions`, so the ratio — not a raw
+   * `score >= 50` — is the comparison that holds across papers of any length.
+   * This is the same normalisation WorksheetsPanel.tsx already uses.
+   */
+  async getSchoolEvaluationStats(): Promise<Map<string, { students: number; assessedStudents: number; reports: number; passed: number }>> {
+    const empty = () => ({ students: 0, assessedStudents: 0, reports: 0, passed: 0 });
+    if (this.mongoDb) {
+      // Reads `evaluationReports` — the collection every live writer targets
+      // (addEvaluationReport, updateEvaluationReport, getEvaluationReports,
+      // and the studentId index in ensureIndexes).
+      const result = await this.mongoDb.collection('students').aggregate([
+        { $lookup: { from: 'evaluationReports', localField: 'id', foreignField: 'studentId', as: 'reports' } },
+        {
+          $project: {
+            schoolId: 1,
+            reportCount: { $size: '$reports' },
+            passedCount: {
+              $size: {
+                $filter: {
+                  input: '$reports',
+                  as: 'r',
+                  // $cond rather than $and so the divide is only evaluated when
+                  // totalQuestions is non-zero — $and does not short-circuit
+                  // and $divide by zero is an error, not a null.
+                  cond: {
+                    $cond: [
+                      { $gt: [{ $ifNull: ['$$r.totalQuestions', 0] }, 0] },
+                      { $gte: [{ $divide: ['$$r.score', '$$r.totalQuestions'] }, 0.5] },
+                      false,
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          $group: {
+            _id: '$schoolId',
+            students: { $sum: 1 },
+            assessedStudents: { $sum: { $cond: [{ $gt: ['$reportCount', 0] }, 1, 0] } },
+            reports: { $sum: '$reportCount' },
+            passed: { $sum: '$passedCount' },
+          }
+        }
+      ]).toArray();
+      const map = new Map<string, { students: number; assessedStudents: number; reports: number; passed: number }>();
+      result.forEach((r: any) => {
+        if (!r._id) return;
+        map.set(r._id, { students: r.students, assessedStudents: r.assessedStudents, reports: r.reports, passed: r.passed });
+      });
+      return map;
+    }
+    // JSON fallback store: the same four numbers, over the in-memory copy.
+    const stats = new Map<string, { students: number; assessedStudents: number; reports: number; passed: number }>();
+    const schoolByStudent = new Map<string, string>();
+    (this.data?.students || []).forEach(s => {
+      if (!s.schoolId) return;
+      schoolByStudent.set(s.id, s.schoolId);
+      const row = stats.get(s.schoolId) || empty();
+      row.students += 1;
+      stats.set(s.schoolId, row);
+    });
+    const assessed = new Set<string>();
+    (this.data?.evaluationReports || []).forEach(r => {
+      const schoolId = schoolByStudent.get(r.studentId);
+      if (!schoolId) return;
+      const row = stats.get(schoolId)!;
+      // Distinct students, so a child assessed several times still counts once.
+      if (!assessed.has(r.studentId)) {
+        assessed.add(r.studentId);
+        row.assessedStudents += 1;
+      }
+      row.reports += 1;
+      if ((r.totalQuestions || 0) > 0 && r.score / r.totalQuestions >= 0.5) row.passed += 1;
+    });
+    return stats;
+  }
+
+  /** Fast aggregation: count of evaluation reports. */
+  async countReports(): Promise<number> {
+    if (this.mongoDb) {
+      return await this.mongoDb.collection('evaluationReports').countDocuments({});
+    }
+    return (this.data?.evaluationReports || []).length;
+  }
+
+  /** Fast aggregation: count reports grouped by pass/fail (score >= 50). */
+  async countReportsByOutcome(): Promise<{ pass: number; fail: number; total: number; avgScore: number }> {
+    if (this.mongoDb) {
+      const result = await this.mongoDb.collection('evaluationReports').aggregate([
+        {
+          $group: {
+            _id: null,
+            total: { $sum: 1 },
+            pass: { $sum: { $cond: [{ $gte: ['$score', 50] }, 1, 0] } },
+            avgScore: { $avg: '$score' }
+          }
+        }
+      ]).toArray();
+      if (result.length === 0) return { pass: 0, fail: 0, total: 0, avgScore: 0 };
+      const r = result[0];
+      return { pass: r.pass, fail: r.total - r.pass, total: r.total, avgScore: Math.round(r.avgScore || 0) };
+    }
+    const all = this.data?.evaluationReports || [];
+    const pass = all.filter(r => (r.score ?? 0) >= 50).length;
+    const avg = all.length > 0 ? all.reduce((s, r) => s + (r.score ?? 0), 0) / all.length : 0;
+    return { pass, fail: all.length - pass, total: all.length, avgScore: Math.round(avg) };
+  }
+  async getScanPaperTemplates(): Promise<ScanPaperTemplate[]> {
+    if (this.mongoDb) return this.mongoDb.collection<ScanPaperTemplate>('scanPaperTemplates').find({}).toArray();
+    return this.data?.scanPaperTemplates || [];
+  }
+  async getScanPaperTemplate(paperId: string, pageNumber = 1) {
+    if (this.mongoDb) return this.mongoDb.collection<ScanPaperTemplate>('scanPaperTemplates').findOne({ paperId, pageNumber });
+    return (await this.getScanPaperTemplates()).find(item => item.paperId === paperId && item.pageNumber === pageNumber);
+  }
+  async upsertScanPaperTemplates(templates: ScanPaperTemplate[]) {
+    if (this.mongoDb) {
+      for (const template of templates) {
+        await this.mongoDb.collection<ScanPaperTemplate>('scanPaperTemplates').updateOne(
+          { paperId: template.paperId, pageNumber: template.pageNumber }, { $set: template }, { upsert: true });
+      }
+    } else {
+      const stored = this.data!.scanPaperTemplates ||= [];
+      for (const template of templates) {
+        const index = stored.findIndex(item => item.paperId === template.paperId && item.pageNumber === template.pageNumber);
+        if (index >= 0) stored[index] = template;
+        else stored.push(template);
+      }
+      await this.save();
+    }
+    return templates;
+  }
+  async getQuestions() {
+    if (this.mongoDb) return await this.mongoDb.collection<Question>('questions').find({}).toArray();
+    return this.data?.questions || [];
+  }
+  async getWorksheets() {
+    if (this.mongoDb) return await this.mongoDb.collection<Worksheet>('worksheets').find({}).toArray();
+    return this.data?.worksheets || [];
+  }
+  /** Worksheets with the given ids; used to resolve the questions behind a student's evaluation reports. */
+  async getWorksheetsByIds(ids: string[]): Promise<Worksheet[]> {
+    if (ids.length === 0) return [];
+    if (this.mongoDb) return await this.mongoDb.collection<Worksheet>('worksheets').find({ id: { $in: ids } }).toArray();
+    const wanted = new Set(ids);
+    return (this.data?.worksheets || []).filter(w => wanted.has(w.id));
+  }
+  async getStudentCycleLocks() {
+    if (this.mongoDb) return await this.mongoDb.collection<StudentCycleLock>('studentCycleLocks').find({}).toArray();
+    return this.data?.studentCycleLocks || [];
+  }
+    async getGenerationWindows() {
+    if (this.mongoDb) return await this.mongoDb.collection<WorksheetGenerationWindow>('generationWindows').find({}).toArray();
+    return this.data?.generationWindows || [];
+  }
+  async getTestHistory(teacherId?: string) {
+    if (this.mongoDb) {
+      const filter = teacherId ? { teacherId } : {};
+      return await this.mongoDb.collection<TestHistoryEntry>('testHistory').find(filter).sort({ timestamp: -1 }).toArray();
+    }
+    const all = this.data?.testHistory || [];
+    const filtered = teacherId ? all.filter(t => t.teacherId === teacherId) : all;
+    return [...filtered].sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+  }
+  async getLevelWorksheets() {
+    if (this.mongoDb) return await this.mongoDb.collection<LevelWorksheet>('levelWorksheets').find({}).toArray();
+    return this.data?.levelWorksheets || [];
+  }
+  async getLevelHtmlTemplates() {
+    if (this.mongoDb) return await this.mongoDb.collection<LevelHtmlTemplate>('levelHtmlTemplates').find({}).sort({ levelNumber: 1 }).toArray();
+    return this.data?.levelHtmlTemplates || [];
+  }
+  async getLevelHtmlTemplate(levelNumber: number) {
+    if (this.mongoDb) return await this.mongoDb.collection<LevelHtmlTemplate>('levelHtmlTemplates').findOne({ levelNumber });
+    return this.data?.levelHtmlTemplates?.find(t => t.levelNumber === levelNumber) || null;
+  }
+  async getQuestionBankByLevel(level: number) {
+    if (this.mongoDb) return await this.mongoDb.collection<QuestionBankEntry>('questionBank').find({ level }).toArray();
+    return [];
+  }
+  async getQuestionBankRandom(level: number, count: number) {
+    if (this.mongoDb) {
+      return await this.mongoDb.collection<QuestionBankEntry>('questionBank').aggregate([
+        { $match: { level } },
+        { $sample: { size: count } }
+      ]).toArray();
+    }
+    return [];
+  }
+
+  /**
+   * Returns all records from the canonical Question Bank (used for admin audit & integrity check).
+   * Queries MongoDB collection `questionBank` if connected; falls back to loading canonical
+   * data/questionBank.json in local file-DB mode or if Atlas is unseeded.
+   */
+  async getAllQuestionBank(): Promise<QuestionBankEntry[]> {
+    if (this.mongoDb) {
+      try {
+        const items = await this.mongoDb.collection<QuestionBankEntry>('questionBank').find({}).sort({ level: 1, questionNumber: 1 }).toArray();
+        if (items && items.length > 0) {
+          return items;
+        }
+      } catch (err: any) {
+        console.warn('Failed to query questionBank from MongoDB, attempting local fallback:', err?.message || err);
+      }
+    }
+    if (this.data?.questionBank && this.data.questionBank.length > 0) {
+      return this.data.questionBank;
+    }
+    // Fallback: load from canonical data/questionBank.json
+    try {
+      const candidates = [
+        path.resolve(__dirname, '../../data/questionBank.json'),
+        path.resolve(__dirname, '../../../data/questionBank.json'),
+        path.resolve(process.cwd(), 'data', 'questionBank.json'),
+        path.resolve(process.cwd(), '..', 'data', 'questionBank.json'),
+      ];
+      for (const p of candidates) {
+        try {
+          const content = await fs.readFile(p, 'utf-8');
+          const parsed = JSON.parse(content);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            if (this.data) this.data.questionBank = parsed;
+            return parsed;
+          }
+        } catch {
+          // continue checking next candidate path
+        }
+      }
+    } catch (err: any) {
+      console.error('Failed to load canonical questionBank.json:', err?.message || err);
+    }
+    return [];
+  }
+
+  /**
+     * Level range for a given class, per the FLN registry
+     * (see backend/src/config/curriculumMap.ts).
+     *
+     * Updated 2026-09-18 for PR #517 (the year-before-Class-1/"Balvatika" stage
+     * finalisation against NCF-FS), which added 15 nodes and moved 4 nodes into
+     * Stage 3, shifting every boundary below from L28 onward. The registry is
+     * now 109 levels, not 93 (L-to-S crosswalk, PR #554).
+     *
+     *   Pre-school 1:            1-8
+     *   Pre-school 2:            9-18
+     *   Year before Class 1:    19-46   (Pre-school 3, the Balvatika stage — see curriculumMap.ts)
+     *   Class 1:                47-60
+     *   Class 2:                61-77
+     *   Class 3:                78-91
+     *   Class 4:                92-109
+     *
+     * classNumber here is documented (db.ts CertificationEligibility etc.) as 2-4
+     * per SRS §3 — the classNumber<=1 branch exists but Class 1 / the year-before
+     * stage are not yet wired into real paper generation (see PR #517 §9: student
+     * + teacher-observation worksheet generation for that stage is still to be built).
+     */
+  static classLevelRange(classNumber: number): { min: number; max: number } {
+    if (classNumber <= 1) return { min: 47, max: 60 }; // class 1
+    if (classNumber === 2) return { min: 61, max: 77 };
+    if (classNumber === 3) return { min: 78, max: 91 };
+    return { min: 92, max: 109 }; // class 4 (and any >4 default)
+  }
+
+  /**
+   * Generate a 10-question FLN paper for the given class using real MongoDB Atlas
+   * `questionBank` documents. Each question is sourced from one level in the class's band.
+   *
+   * Default for class 2 was 22-31 (legacy); now correctly 43-61.
+   */
+  async generateClassPaperFromAtlas(studentId: string | undefined, classNumber: number): Promise<Question[]> {
+    const { min: minLevel, max: maxLevel } = DBStore.classLevelRange(classNumber);
+    const questions: Question[] = [];
+    for (let lvl = minLevel; lvl <= maxLevel && questions.length < 10; lvl++) {
+      let qDoc: any = null;
+      if (this.mongoDb) {
+        try {
+          const docs = await this.mongoDb.collection('questionBank').aggregate([
+            { $match: { level: lvl } },
+            { $sample: { size: 1 } }
+          ]).toArray();
+          if (docs && docs.length > 0) qDoc = docs[0];
+        } catch (_) { }
+      }
+      if (qDoc) {
+        questions.push({
+          question_id: `Q_L${lvl}_${qDoc.questionNumber || (questions.length + 1)}`,
+          question: qDoc.questionText || qDoc.question || `Level ${lvl} Problem`,
+          answer: String(qDoc.answer || '').trim(),
+          answer_type: 'number',
+          topic: qDoc.levelTitle || `Level ${lvl}`,
+          subtopic: qDoc.section || `Section ${lvl}.0`,
+          difficulty: 'medium',
+          source_level: lvl,
+          // Authoritative concept identity for this curriculum level. Metadata
+          // only — it does not affect the question, its answer or its level.
+          conceptId: CURRICULUM_MAPPING[lvl]?.conceptId
+        });
+      } else {
+        // Deterministic fallback so the generated paper still has a valid answer key
+        // even when questionBank has no docs for this level.
+        const a = lvl;
+        const b = (lvl % 7) + 2;
+        questions.push({
+          question_id: `Q_L${lvl}_${questions.length + 1}`,
+          question: `Level ${lvl}: Calculate ${a} + ${b} = ?`,
+          answer: String(a + b),
+          answer_type: 'number',
+          // Mirror the qDoc branch above: derive the topic string from the
+          // canonical CURRICULUM_MAPPING entry (e.g. "Flexible
+          // Classification" for level 22). Without this, the offline
+          // fallback produced a misleading placeholder ("Level 22 Number
+          // Operations") that the Python pipeline rendered verbatim,
+          // making the narrative disagree with the paper's conceptId.
+          topic: CURRICULUM_MAPPING[lvl]?.levelTitle || `Level ${lvl}`,
+          subtopic: 'Addition',
+          difficulty: 'medium',
+          source_level: lvl,
+          // Same authoritative concept identity on the offline fallback item.
+          conceptId: CURRICULUM_MAPPING[lvl]?.conceptId
+        });
+      }
+    }
+
+    if (studentId && questions.length > 0) {
+      await this.assignDiagnosticPaperToStudent(studentId, questions);
+    }
+    return questions;
+  }
+
+  /**
+   * Back-compat: legacy callers (paperGenerator.ts line ~147) pass classNumber=2.
+   * Routes through the new class-aware generator.
+   */
+  async generateClass2PaperFromAtlas(studentId?: string): Promise<Question[]> {
+    return await this.generateClassPaperFromAtlas(studentId, 2);
+  }
+  async assignDiagnosticPaperToStudent(studentId: string, questions: Question[]) {
+    if (this.mongoDb) {
+      try {
+        await this.mongoDb.collection('students').updateOne(
+          { id: studentId },
+          { $set: { assignedDiagnosticQuestions: questions } }
+        );
+      } catch (e) {
+        console.warn('Failed to persist assigned paper to MongoDB student:', e);
+      }
+    }
+    if (this.data && this.data.students) {
+      const st = this.data.students.find(s => s.id === studentId);
+      if (st) st.assignedDiagnosticQuestions = questions;
+    }
+  }
+
+  async getStudentAssignedQuestions(studentId: string, classNumber: number = 2): Promise<Question[]> {
+      let student: Student | null = null;
+      if (this.mongoDb) {
+        student = await this.mongoDb.collection<Student>('students').findOne({ id: studentId });
+      }
+      if (!student && this.data && this.data.students) {
+        student = this.data.students.find(s => s.id === studentId) || null;
+      }
+      // Only reuse a cached paper that still carries the curriculum identity
+      // (conceptId on every question). A paper cached before questions were
+      // tagged, or written by a code path that produced conceptId-less
+      // questions (e.g. bulk diagnostic masterJson items), cannot be matched
+      // back to the 93-level framework, so the prerequisite resolver would
+      // silently emit nothing. Treating such a paper as absent makes
+      // generateClassPaperFromAtlas regenerate it on demand.
+      const cached = student?.assignedDiagnosticQuestions;
+      if (cached && cached.length > 0 && cached.every(q => q.conceptId)) {
+        return dedupeQuestionsById(cached);
+      }
+      // Fall back to a class-correct generator (legacy = always L22-L31, wrong for all classes).
+      return await this.generateClassPaperFromAtlas(studentId, classNumber);
+    }
+
+  async getAnswerSubmissions() {
+    if (this.mongoDb) return await this.mongoDb.collection<AnswerSubmission>('answerSubmissions').find({}).toArray();
+    return this.data?.answerSubmissions || [];
+  }
+  async getEvaluationReports(opts?: { studentIds?: string[] }) {
+    if (this.mongoDb) {
+      const filter: any = {};
+      if (opts?.studentIds) filter.studentId = { $in: opts.studentIds };
+      return await this.mongoDb.collection<EvaluationReport>('evaluationReports').find(filter).toArray();
+    }
+    let result = this.data?.evaluationReports || [];
+    if (opts?.studentIds) result = result.filter(r => opts.studentIds!.includes(r.studentId));
+    return result;
+  }
+
+  async getStudentsByIds(ids: string[]): Promise<Student[]> {
+    if (this.mongoDb) {
+      return await this.mongoDb.collection<Student>('students').find({ id: { $in: ids } }).toArray();
+    }
+    return (this.data?.students || []).filter(s => ids.includes(s.id));
+  }
+
+  async getAnalyticsForScope(schoolFilter?: any) {
+    if (this.mongoDb) {
+      let schoolIds: string[] | null = null;
+      if (schoolFilter && Object.keys(schoolFilter).length > 0) {
+        const schools = await this.mongoDb.collection('schools')
+          .find(schoolFilter, { projection: { id: 1 } })
+          .toArray();
+        schoolIds = schools.map(s => s.id);
+      }
+
+      const studentFilter: any = {};
+      if (schoolIds) {
+        studentFilter.schoolId = { $in: schoolIds };
+      }
+
+      const statsPromise = this.mongoDb.collection('students').aggregate([
+        { $match: studentFilter },
+        {
+          $group: {
+            _id: null,
+            count: { $sum: 1 },
+            sumLevel: { $sum: '$currentLevel' },
+            certified: {
+              $sum: {
+                $cond: [{ $gte: ['$currentLevel', 5] }, 1, 0]
+              }
+            }
+          }
+        }
+      ]).toArray();
+
+      const distPromise = this.mongoDb.collection('students').aggregate([
+        { $match: studentFilter },
+        {
+          $group: {
+            _id: '$currentLevel',
+            count: { $sum: 1 }
+          }
+        }
+      ]).toArray();
+
+      const [statsResult, distResult] = await Promise.all([statsPromise, distPromise]);
+
+      const stats = statsResult[0] || { count: 0, sumLevel: 0, certified: 0 };
+      const count = stats.count;
+      const sumLevel = stats.sumLevel;
+      const certified = stats.certified;
+
+      const avgLevel = count > 0 ? Math.round((sumLevel / count) * 10) / 10 : 0;
+      const certificationRate = count > 0 ? Math.round((certified / count) * 100) : 0;
+
+      const topicMastery = {
+        "Number Sense": Math.min(100, Math.round(55 + avgLevel * 8)),
+        "Number Operations": Math.min(100, Math.round(45 + avgLevel * 9)),
+        "Shapes": Math.min(100, Math.round(58 + avgLevel * 7)),
+        "Fractions": Math.min(100, Math.round(20 + avgLevel * 11)),
+        "Patterns": Math.min(100, Math.round(38 + avgLevel * 10)),
+        "Measurement": Math.min(100, Math.round(32 + avgLevel * 10))
+      };
+
+      const levelDistribution: Record<string, number> = {};
+      for (let i = 1; i <= 15; i++) {
+        levelDistribution[`Level ${i}`] = 0;
+      }
+      levelDistribution["Level 16+"] = 0;
+
+      distResult.forEach(r => {
+        const lvl = r._id;
+        if (lvl >= 16) {
+          levelDistribution["Level 16+"] += r.count;
+        } else if (lvl >= 1 && lvl <= 15) {
+          levelDistribution[`Level ${lvl}`] = r.count;
+        }
+      });
+
+      return {
+        avgLevel,
+        certificationRate,
+        topicMastery,
+        levelDistribution,
+        count
+      };
+    }
+
+    const schools = this.data?.schools || [];
+    let schoolIds: string[] | null = null;
+    if (schoolFilter && Object.keys(schoolFilter).length > 0) {
+      schoolIds = schools.filter(s => {
+        return Object.entries(schoolFilter).every(([k, v]) => {
+          if (v && typeof v === 'object' && Array.isArray((v as any).$in)) {
+            return (v as any).$in.includes((s as any)[k]);
+          }
+          return (s as any)[k] === v;
+        });
+      }).map(s => s.id);
+    }
+
+    let filteredStudents = this.data?.students || [];
+    if (schoolIds) {
+      filteredStudents = filteredStudents.filter(s => schoolIds!.includes(s.schoolId));
+    }
+
+    const count = filteredStudents.length;
+    if (count === 0) {
+      return {
+        avgLevel: 0,
+        certificationRate: 0,
+        topicMastery: { "Number Sense": 0, "Number Operations": 0, "Shapes": 0, "Fractions": 0, "Patterns": 0, "Measurement": 0 },
+        levelDistribution: Object.fromEntries(Array.from({ length: 15 }, (_, i) => [`Level ${i + 1}`, 0]).concat([["Level 16+", 0]])),
+        count: 0
+      };
+    }
+
+    const sumLevel = filteredStudents.reduce((acc, s) => acc + s.currentLevel, 0);
+    const avgLevel = Math.round((sumLevel / count) * 10) / 10;
+    const certified = filteredStudents.filter(s => s.currentLevel >= 5).length;
+    const certificationRate = Math.round((certified / count) * 100);
+
+    const topicMastery = {
+      "Number Sense": Math.min(100, Math.round(55 + avgLevel * 8)),
+      "Number Operations": Math.min(100, Math.round(45 + avgLevel * 9)),
+      "Shapes": Math.min(100, Math.round(58 + avgLevel * 7)),
+      "Fractions": Math.min(100, Math.round(20 + avgLevel * 11)),
+      "Patterns": Math.min(100, Math.round(38 + avgLevel * 10)),
+      "Measurement": Math.min(100, Math.round(32 + avgLevel * 10))
+    };
+
+    const levelDistribution: Record<string, number> = {};
+    for (let i = 1; i <= 15; i++) {
+      levelDistribution[`Level ${i}`] = filteredStudents.filter(s => s.currentLevel === i).length;
+    }
+    levelDistribution["Level 16+"] = filteredStudents.filter(s => s.currentLevel >= 16).length;
+
+    return {
+      avgLevel,
+      certificationRate,
+      topicMastery,
+      levelDistribution,
+      count
+    };
+  }
+
+  async getTickets() {
+    if (this.mongoDb) return await this.mongoDb.collection<Ticket>('tickets').find({}).toArray();
+    return this.data?.tickets || [];
+  }
+  async getLogbook() {
+    if (this.mongoDb) return await this.mongoDb.collection<LogEntry>('logbook').find({}).toArray();
+    return this.data?.logbook || [];
+  }
+  async getAnnouncements() {
+    if (this.mongoDb) return await this.mongoDb.collection<Announcement>('announcements').find({}).toArray();
+    return this.data?.announcements || [];
+  }
+
+  /** Archetypes for one class, or every class when no class is named. */
+  async getMisconceptionClusters(classGroup?: string) {
+    const filter = classGroup ? { classGroup } : {};
+    if (this.mongoDb) {
+      return await this.mongoDb
+        .collection<MisconceptionCluster>('misconception_clusters')
+        .find(filter)
+        .toArray();
+    }
+    const all = this.data?.misconceptionClusters || [];
+    return classGroup ? all.filter(c => c.classGroup === classGroup) : all;
+  }
+
+  async createMisconceptionCluster(cluster: MisconceptionCluster) {
+    if (this.mongoDb) await this.mongoDb.collection('misconception_clusters').insertOne(cluster);
+    if (this.data) {
+      if (!this.data.misconceptionClusters) this.data.misconceptionClusters = [];
+      this.data.misconceptionClusters.push(cluster);
+    }
+    return cluster;
+  }
+
+  async updateMisconceptionCluster(cluster: MisconceptionCluster) {
+    if (this.mongoDb) await this.mongoDb.collection('misconception_clusters').replaceOne({ id: cluster.id }, cluster, { upsert: true });
+    if (this.data) {
+      if (!this.data.misconceptionClusters) this.data.misconceptionClusters = [];
+      const idx = this.data.misconceptionClusters.findIndex(x => x.id === cluster.id);
+      if (idx !== -1) this.data.misconceptionClusters[idx] = cluster;
+      else this.data.misconceptionClusters.push(cluster);
+    }
+    return cluster;
   }
 
   // --- Write / Update Helpers ---
 
   async addUser(user: User) {
-    this.data!.users.push(user);
-    await this.save();
+    if (this.mongoDb) await this.mongoDb.collection('users').insertOne(user);
+    if (this.data) {
+      this.data.users.push(user);
+      if (!this.mongoDb) await this.save();
+    }
     return user;
   }
 
+  async updateUserPasswordHash(userId: string, passwordHash: string) {
+    if (!this.mongoDb) {
+      const u = this.data?.users.find(x => x.id === userId);
+      if (u) {
+        u.passwordHash = passwordHash;
+        await this.save();
+      }
+      return;
+    }
+    await this.mongoDb!.collection('users').updateOne({ id: userId }, { $set: { passwordHash } });
+  }
+
+  async getExistingAadhars(aadhars: string[]): Promise<Set<string>> {
+    if (this.mongoDb) {
+      const docs = await this.mongoDb.collection('students')
+        .find({ aadharMasked: { $in: aadhars } }, { projection: { aadharMasked: 1 } })
+        .toArray();
+      return new Set(docs.map(d => d.aadharMasked));
+    }
+    const set = new Set<string>();
+    (this.data?.students || []).forEach(s => {
+      if (aadhars.includes(s.aadharMasked)) set.add(s.aadharMasked);
+    });
+    return set;
+  }
+
+  /**
+   * School-scoped variant of `getExistingAadhars`. Used by the student
+   * registration dup-check so a volunteer's submission is rejected only
+   * when the same Aadhaar already exists at the *same* school — not when
+   * it happens to share a 4-digit suffix with a student in some other
+   * school (which is the common case against the 86,400-student seed,
+   * since 1,440 schools × 60 students covers the 10,000 4-digit suffixes
+   * ~8.6×). The cross-school "is this the same person?" question is
+   * delegated to the vault `getExistingAadhaarIdentityIds` check, which
+   * is deterministic on the input digits and only fires for students
+   * that were actually tokenized through the vault (seed students carry
+   * `aadhaarIdentityId: null`, so the check is a no-op for them).
+   */
+  async getExistingAadharsInSchool(schoolId: string, aadhars: string[]): Promise<Set<string>> {
+    if (this.mongoDb) {
+      const docs = await this.mongoDb.collection('students')
+        .find({ schoolId, aadharMasked: { $in: aadhars } }, { projection: { aadharMasked: 1 } })
+        .toArray();
+      return new Set(docs.map(d => d.aadharMasked));
+    }
+    const set = new Set<string>();
+    (this.data?.students || []).forEach(s => {
+      if (s.schoolId === schoolId && aadhars.includes(s.aadharMasked)) set.add(s.aadharMasked);
+    });
+    return set;
+  }
+
+  async getExistingAadhaarIdentityIds(identityIds: string[]): Promise<Set<string>> {
+    const cleanIds = identityIds.filter(Boolean);
+    if (cleanIds.length === 0) return new Set<string>();
+    if (this.mongoDb) {
+      const docs = await this.mongoDb.collection('students')
+        .find({ aadhaarIdentityId: { $in: cleanIds } }, { projection: { aadhaarIdentityId: 1 } })
+        .toArray();
+      return new Set(docs.map(d => d.aadhaarIdentityId).filter(Boolean));
+    }
+    const set = new Set<string>();
+    (this.data?.students || []).forEach(s => {
+      if (s.aadhaarIdentityId && cleanIds.includes(s.aadhaarIdentityId)) set.add(s.aadhaarIdentityId);
+    });
+    return set;
+  }
+
   async addStudent(student: Student) {
-    this.data!.students.push(student);
-    await this.save();
+    if (this.mongoDb) {
+      await this.mongoDb.collection('students').insertOne(student);
+    }
+    if (this.data) {
+      this.data.students.push(student);
+      if (!this.mongoDb) await this.save();
+    }
     return student;
   }
 
-  async updateStudent(studentId: string, updates: Partial<Student>) {
-    const s = this.data!.students.find(x => x.id === studentId);
-    if (s) {
-      Object.assign(s, updates);
-      await this.save();
+  // Only the original seed data ever populated the `classes` collection —
+  // registering a student (single or bulk-import) creates a Student record
+  // tagged with a classGroup/section, but nothing was ever creating the
+  // matching ClassGroup document those classGroup/section strings imply.
+  // Several features key off ClassGroup existing for a teacher/school (the
+  // Teacher Dashboard's class-tab bar, and — the bug this was found from —
+  // bulk diagnostic generation's authorization check), so a teacher whose
+  // whole roster was registered live (not seeded) could end up "not
+  // authorized" for a class she demonstrably has real students in.
+  // Called after every successful student creation; idempotent — does
+  // nothing if a ClassGroup already exists for this school+class+section.
+  async ensureClassExists(schoolId: string, className: string, section: string, teacherId: string) {
+    const existing = await this.getClasses();
+    if (existing.some(c => c.schoolId === schoolId && c.className === className && c.section === section)) {
+      return;
     }
-    return s;
+    const newClass: ClassGroup = {
+      id: 'c_' + schoolId + '_' + className.replace(/\s+/g, '') + '_' + section,
+      schoolId,
+      className,
+      section,
+      teacherId,
+    };
+    if (this.mongoDb) {
+      // Race-safe: two near-simultaneous registrations into a brand-new
+      // class both pass the `existing.some(...)` check above before either
+      // has inserted. upsert on the same deterministic `id` means the
+      // second one updates rather than duplicate-inserts.
+      await this.mongoDb.collection('classes').updateOne(
+        { id: newClass.id },
+        { $setOnInsert: newClass },
+        { upsert: true }
+      );
+    }
+    if (this.data) {
+      if (!this.data.classes.some(c => c.id === newClass.id)) {
+        this.data.classes.push(newClass);
+      }
+      if (!this.mongoDb) await this.save();
+    }
+  }
+
+  async ensureClassesExist(schoolId: string, classNames: string[], section: string, teacherId: string) {
+    const classes: ClassGroup[] = classNames.map(className => ({
+      id: 'c_' + schoolId + '_' + className.replace(/\s+/g, '') + '_' + section,
+      schoolId,
+      className,
+      section,
+      teacherId,
+    }));
+    if (this.mongoDb && classes.length > 0) {
+      await this.mongoDb.collection<ClassGroup>('classes').bulkWrite(classes.map(cls => ({
+        updateOne: {
+          filter: { id: cls.id },
+          update: { $setOnInsert: cls },
+          upsert: true,
+        },
+      })));
+    }
+    if (this.data) {
+      for (const cls of classes) {
+        if (!this.data.classes.some(existing => existing.id === cls.id)) this.data.classes.push(cls);
+      }
+      if (!this.mongoDb && classes.length > 0) await this.save();
+    }
+  }
+
+  async updateStudent(studentId: string, updates: Partial<Student>) {
+    // Defense-in-depth (Phase 2 hardening): routes whitelist their fields
+    // today, but this mutator accepts any Partial<Student>. Aadhaar identity
+    // fields are owned exclusively by the tokenized creation path; refuse
+    // them here so no future caller can overwrite vault references or
+    // reintroduce plaintext through $set. addStudent() is intentionally NOT
+    // restricted — it needs these fields at creation time.
+    const blocked = Object.keys(updates).filter(k => AADHAAR_PROTECTED_UPDATE_FIELDS.includes(k));
+    if (blocked.length > 0) {
+      throw new Error(
+        `updateStudent: refusing to write Aadhaar-sensitive field(s): ${blocked.join(', ')}. `
+        + 'These are owned by the Aadhaar Vault tokenization path (createStudentFromData).',
+      );
+    }
+    // Phase 2 hardening fix: support the local file-fallback store the same
+    // way addStudent() does. The previous unconditional `this.mongoDb!`
+    // crashed every level/profile PATCH when MongoDB was absent.
+    if (!this.mongoDb) {
+      const list = this.data?.students;
+      if (!list) return undefined;
+      const idx = list.findIndex(x => x.id === studentId);
+      if (idx === -1) return undefined;
+      list[idx] = { ...list[idx], ...updates };
+      await this.save();
+      return list[idx];
+    }
+    await this.mongoDb.collection('students').updateOne({ id: studentId }, { $set: updates });
+    const s = await this.mongoDb.collection<Student>('students').findOne({ id: studentId });
+    if (s && this.data) {
+      const idx = this.data.students.findIndex(x => x.id === studentId);
+      if (idx !== -1) this.data.students[idx] = s;
+    }
+    return s || undefined;
   }
 
   async addWorksheet(ws: Worksheet) {
-    this.data!.worksheets.push(ws);
-    await this.save();
+    if (!this.mongoDb) {
+      if (this.data) {
+        this.data.worksheets.push(ws);
+        await this.save();
+      }
+      return ws;
+    }
+    await this.mongoDb!.collection('worksheets').insertOne(ws);
+    if (this.data) this.data.worksheets.push(ws);
     return ws;
   }
 
-  async upsertScanPaperTemplates(templates: ScanPaperTemplate[]) {
-    for (const template of templates) {
-      const existingIndex = this.data!.scanPaperTemplates.findIndex(item =>
-        item.paperId === template.paperId && item.pageNumber === template.pageNumber
+  async addStudentCycleLock(lock: StudentCycleLock) {
+    if (this.mongoDb) await this.mongoDb.collection('studentCycleLocks').insertOne(lock as any);
+    if (this.data) this.data.studentCycleLocks.push(lock);
+    return lock;
+  }
+  async addGenerationWindow(window: WorksheetGenerationWindow) {
+    if (this.mongoDb) await this.mongoDb.collection('generationWindows').insertOne(window);
+    if (this.data) this.data.generationWindows.push(window);
+    return window;
+  }
+  async updateGenerationWindow(
+    id: string,
+    updates: Partial<WorksheetGenerationWindow>
+  ) {
+    if (this.mongoDb) {
+      await this.mongoDb.collection<WorksheetGenerationWindow>('generationWindows').updateOne(
+        { id },
+        { $set: updates }
       );
-      if (existingIndex >= 0) this.data!.scanPaperTemplates[existingIndex] = template;
-      else this.data!.scanPaperTemplates.push(template);
     }
-    await this.save();
-    return templates;
+
+    if (this.data) {
+      const index = this.data.generationWindows.findIndex(window => window.id === id);
+
+      if (index !== -1) {
+        this.data.generationWindows[index] = {
+          ...this.data.generationWindows[index],
+          ...updates
+        };
+      }
+    }
+  }
+  async addTestHistoryEntry(entry: TestHistoryEntry) {
+    if (this.mongoDb) {
+      await this.mongoDb.collection('testHistory').insertOne(entry);
+    }
+    if (this.data) this.data.testHistory.push(entry);
+    return entry;
   }
 
   async updateWorksheet(worksheetId: string, updates: Partial<Worksheet>) {
-    const ws = this.data!.worksheets.find(x => x.id === worksheetId);
-    if (ws) {
-      Object.assign(ws, updates);
+    if (!this.mongoDb) {
+      const list = this.data?.worksheets;
+      if (!list) return undefined;
+      const idx = list.findIndex(x => x.id === worksheetId);
+      if (idx === -1) return undefined;
+      list[idx] = { ...list[idx], ...updates };
       await this.save();
+      return list[idx];
     }
-    return ws;
+    await this.mongoDb!.collection('worksheets').updateOne({ id: worksheetId }, { $set: updates });
+    const ws = await this.mongoDb!.collection<Worksheet>('worksheets').findOne({ id: worksheetId });
+    if (ws && this.data) {
+      const idx = this.data.worksheets.findIndex(x => x.id === worksheetId);
+      if (idx !== -1) this.data.worksheets[idx] = ws;
+    }
+    return ws || undefined;
   }
 
   async addLevelWorksheet(ws: LevelWorksheet) {
-    this.data!.levelWorksheets.push(ws);
-    await this.save();
+    if (!this.mongoDb) {
+      if (this.data) {
+        this.data.levelWorksheets.push(ws);
+        await this.save();
+      }
+      return ws;
+    }
+    await this.mongoDb!.collection('levelWorksheets').insertOne(ws);
+    if (this.data) this.data.levelWorksheets.push(ws);
     return ws;
   }
 
   async addAnswerSubmission(sub: AnswerSubmission) {
-    this.data!.answerSubmissions.push(sub);
-    await this.save();
+    if (!this.mongoDb) {
+      if (this.data) {
+        this.data.answerSubmissions.push(sub);
+        await this.save();
+      }
+      return sub;
+    }
+    await this.mongoDb!.collection('answerSubmissions').insertOne(sub);
+    if (this.data) this.data.answerSubmissions.push(sub);
     return sub;
   }
 
   async addEvaluationReport(rep: EvaluationReport) {
-    this.data!.evaluationReports.push(rep);
-    await this.save();
+    if (!this.mongoDb) {
+      if (this.data) {
+        this.data.evaluationReports.push(rep);
+        await this.save();
+      }
+      return rep;
+    }
+    await this.mongoDb!.collection('evaluationReports').insertOne(rep);
+    if (this.data) this.data.evaluationReports.push(rep);
     return rep;
   }
 
+  // --- Certification (SRS R-7) ---
+
+  async getCertifications(): Promise<Certification[]> {
+    if (this.mongoDb) return await this.mongoDb.collection<Certification>('certifications').find({}).toArray();
+    return this.data?.certifications || [];
+  }
+
+  async getCertificationById(certId: string): Promise<Certification | null> {
+    if (this.mongoDb) return await this.mongoDb.collection<Certification>('certifications').findOne({ id: certId });
+    return this.data?.certifications.find(c => c.id === certId) || null;
+  }
+
+  async getCertificationByStudentClassLevel(studentId: string, classNumber: number, level: number): Promise<Certification | null> {
+    const list = this.mongoDb
+      ? await this.mongoDb.collection<Certification>('certifications').find({ studentId, classNumber, level }).toArray()
+      : (this.data?.certifications || []).filter(c => c.studentId === studentId && c.classNumber === classNumber && c.level === level);
+    // Prefer active > review_needed > revoked (most-recent verdict wins for orchestrator)
+    const priority: Record<CertificationStatus, number> = { active: 0, review_needed: 1, revoked: 2 };
+    return list.sort((a, b) => priority[a.status] - priority[b.status])[0] || null;
+  }
+
+  async addCertification(cert: Certification) {
+    if (!this.mongoDb) {
+      if (this.data) {
+        this.data.certifications.push(cert);
+        await this.save();
+      }
+      return cert;
+    }
+    await this.mongoDb!.collection('certifications').insertOne(cert);
+    if (this.data) this.data.certifications.push(cert);
+    return cert;
+  }
+
+  async updateCertification(certId: string, updates: Partial<Certification>) {
+    if (!this.mongoDb) {
+      const list = this.data?.certifications;
+      if (!list) return undefined;
+      const idx = list.findIndex(x => x.id === certId);
+      if (idx === -1) return undefined;
+      list[idx] = { ...list[idx], ...updates };
+      await this.save();
+      return list[idx];
+    }
+    await this.mongoDb!.collection('certifications').updateOne({ id: certId }, { $set: updates });
+    if (this.mongoDb) {
+      return await this.mongoDb.collection<Certification>('certifications').findOne({ id: certId });
+    }
+  }
+
+  /** Optimistic concurrency: only update if version still matches. Returns null if no match. */
+  async updateCertificationIfVersion(certId: string, expectedVersion: number, updates: Partial<Certification>) {
+    if (this.mongoDb) {
+      const result = await this.mongoDb.collection<Certification>('certifications').findOneAndUpdate(
+        { id: certId, version: expectedVersion },
+        { $set: updates, $inc: { version: 1 } },
+        { returnDocument: 'after' }
+      );
+      return result || null;
+    }
+    if (this.data) {
+      const idx = this.data.certifications.findIndex(c => c.id === certId && c.version === expectedVersion);
+      if (idx === -1) return null;
+      this.data.certifications[idx] = { ...this.data.certifications[idx], ...updates, version: this.data.certifications[idx].version + 1 };
+      await this.save();
+      return this.data.certifications[idx];
+    }
+    return null;
+  }
+
+  async getCompetencyRequirements(): Promise<CompetencyRequirement[]> {
+    if (this.mongoDb) return await this.mongoDb.collection<CompetencyRequirement>('competencyRequirements').find({}).toArray();
+    return this.data?.competencyRequirements || [];
+  }
+
+  /** Most recent conceptMastery for a student, from their latest EvaluationReport. */
+  async getLatestConceptMastery(studentId: string): Promise<Record<string, MasteryLevel> | null> {
+    const reports = this.mongoDb
+      ? await this.mongoDb.collection<EvaluationReport>('evaluationReports').find({ studentId }).sort({ timestamp: -1 }).limit(1).toArray()
+      : (this.data?.evaluationReports || []).filter(r => r.studentId === studentId).sort((a, b) => b.timestamp.localeCompare(a.timestamp)).slice(0, 1);
+    if (reports.length === 0) return null;
+    return reports[0].conceptMastery;
+  }
+
+  async getEvaluationReportById(id: string) {
+    if (this.mongoDb) return await this.mongoDb.collection<EvaluationReport>('evaluationReports').findOne({ id });
+    return (this.data?.evaluationReports || []).find(r => r.id === id);
+  }
+
+  async updateEvaluationReport(id: string, updates: Partial<EvaluationReport>) {
+    if (this.mongoDb) {
+      await this.mongoDb.collection('evaluationReports').updateOne({ id }, { $set: updates });
+      return await this.mongoDb.collection<EvaluationReport>('evaluationReports').findOne({ id });
+    }
+    if (this.data) {
+      const idx = this.data.evaluationReports.findIndex(r => r.id === id);
+      if (idx !== -1) {
+        this.data.evaluationReports[idx] = { ...this.data.evaluationReports[idx], ...updates };
+        return this.data.evaluationReports[idx];
+      }
+    }
+    return undefined;
+  }
+
   async addTicket(t: Ticket) {
-    this.data!.tickets.push(t);
-    await this.save();
+    if (!this.mongoDb) {
+      if (this.data) {
+        this.data.tickets.push(t);
+        await this.save();
+      }
+      return t;
+    }
+    await this.mongoDb!.collection('tickets').insertOne(t);
+    if (this.data) this.data.tickets.push(t);
     return t;
   }
 
   async updateTicket(id: string, updates: Partial<Ticket>) {
-    const t = this.data!.tickets.find(x => x.id === id);
-    if (t) {
-      Object.assign(t, updates);
+    if (!this.mongoDb) {
+      const list = this.data?.tickets;
+      if (!list) return undefined;
+      const idx = list.findIndex(x => x.id === id);
+      if (idx === -1) return undefined;
+      list[idx] = { ...list[idx], ...updates };
       await this.save();
+      return list[idx];
     }
-    return t;
+    await this.mongoDb!.collection('tickets').updateOne({ id }, { $set: updates });
+    const t = await this.mongoDb!.collection<Ticket>('tickets').findOne({ id });
+    if (t && this.data) {
+      const idx = this.data.tickets.findIndex(x => x.id === id);
+      if (idx !== -1) this.data.tickets[idx] = t;
+    }
+    return t || undefined;
   }
 
   async updateUser(userId: string, updates: Partial<User>) {
-    const u = this.data!.users.find(x => x.id === userId);
-    if (u) {
-      Object.assign(u, updates);
+    if (!this.mongoDb) {
+      const list = this.data?.users;
+      if (!list) return undefined;
+      const idx = list.findIndex(x => x.id === userId);
+      if (idx === -1) return undefined;
+      list[idx] = { ...list[idx], ...updates };
       await this.save();
+      return list[idx];
     }
-    return u;
+    await this.mongoDb!.collection('users').updateOne({ id: userId }, { $set: updates });
+    const u = await this.mongoDb!.collection<User>('users').findOne({ id: userId });
+    if (u && this.data) {
+      const idx = this.data.users.findIndex(x => x.id === userId);
+      if (idx !== -1) this.data.users[idx] = u;
+    }
+    return u || undefined;
   }
 
   async updateSchool(schoolId: string, updates: Partial<School>) {
-    const s = this.data!.schools.find(x => x.id === schoolId);
-    if (s) {
-      Object.assign(s, updates);
+    if (!this.mongoDb) {
+      const list = this.data?.schools;
+      if (!list) return undefined;
+      const idx = list.findIndex(x => x.id === schoolId);
+      if (idx === -1) return undefined;
+      list[idx] = { ...list[idx], ...updates };
       await this.save();
+      return list[idx];
     }
-    return s;
+    await this.mongoDb!.collection('schools').updateOne({ id: schoolId }, { $set: updates });
+    const s = await this.mongoDb!.collection<School>('schools').findOne({ id: schoolId });
+    if (s && this.data) {
+      const idx = this.data.schools.findIndex(x => x.id === schoolId);
+      if (idx !== -1) this.data.schools[idx] = s;
+    }
+    return s || undefined;
   }
 
   async addSchool(school: School) {
-    this.data!.schools.push(school);
-    await this.save();
+    if (this.mongoDb) await this.mongoDb.collection('schools').insertOne(school);
+    if (this.data) {
+      this.data.schools.push(school);
+      if (!this.mongoDb) await this.save();
+    }
     return school;
   }
 
+  async deleteSchool(id: string): Promise<boolean> {
+    if (this.mongoDb) {
+      await this.mongoDb.collection('schools').deleteOne({ id });
+    }
+    if (this.data) {
+      const idx = this.data.schools.findIndex(s => s.id === id);
+      if (idx !== -1) {
+        this.data.schools.splice(idx, 1);
+        if (!this.mongoDb) await this.save();
+      }
+    }
+    return true;
+  }
+
+  async deleteUser(id: string): Promise<boolean> {
+    if (this.mongoDb) {
+      await this.mongoDb.collection('users').deleteOne({ id });
+    }
+    if (this.data) {
+      const idx = this.data.users.findIndex(u => u.id === id);
+      if (idx !== -1) {
+        this.data.users.splice(idx, 1);
+        if (!this.mongoDb) await this.save();
+      }
+    }
+    return true;
+  }
+
+  async deleteClassesForSchool(schoolId: string): Promise<number> {
+    if (this.mongoDb) {
+      await this.mongoDb.collection('classes').deleteMany({ schoolId });
+    }
+    if (this.data) {
+      const initialLen = this.data.classes.length;
+      this.data.classes = this.data.classes.filter(c => c.schoolId !== schoolId);
+      if (!this.mongoDb && this.data.classes.length !== initialLen) await this.save();
+    }
+    return 0;
+  }
+
   async addLog(log: LogEntry) {
-    this.data!.logbook.unshift(log);
-    await this.save();
+    // Phase 2 hardening fix: guard the Mongo write like addStudent() does.
+    // Previously `this.mongoDb!` crashed here whenever MongoDB was absent
+    // (local file fallback), which threw INSIDE the student-registration
+    // handlers right after addStudent() had already persisted — the student
+    // was saved but the HTTP response was lost (express 4 cannot catch
+    // async handler throws), hanging every file-mode registration.
+    if (this.mongoDb) {
+      await this.mongoDb.collection('logbook').insertOne(log);
+    }
+    if (this.data) {
+      this.data.logbook.unshift(log);
+      if (!this.mongoDb) await this.save();
+    }
     return log;
   }
 
+  /**
+   * Transactional sibling of {@link addLog}. Writes the entry to
+   * the `logbook` collection **inside the supplied MongoDB
+   * session**, so the audit row commits or rolls back atomically
+   * with the caller's other writes (e.g. the `vault_identities`
+   * and `vault_tokens` inserts in the tokenize command).
+   *
+   * **Why this exists.** Issue #406's review asked that the
+   * vault's audit sink be the existing `logbook` collection, not
+   * a separate `vault_audit_log` table. The naive refactor
+   * ("call `addLog()` after the transaction commits") breaks the
+   * identity+token+audit atomicity invariant — a tokenize that
+   * fails after the identity insert would still leave an audit
+   * row, and vice versa. This method carries the session so the
+   * Mongo driver ties the logbook insert to the same
+   * `withTransaction` block as the rest of the unit-of-work.
+   *
+   * **File-fallback path.** The `data.logbook` array is also
+   * updated best-effort. There is no real transaction in the
+   * file mode, so the audit row is NOT atomic with the rest of
+   * the vault write — a crash between the two would leave a
+   * token row without a paired audit row. This matches the
+   * wider pre-existing posture (the file mode has no
+   * cross-collection atomicity at all). Operators running the
+   * vault in production are expected to use a real Mongo
+   * replica set; the JSON file is a dev convenience, not a
+   * secure store.
+   */
+  async addLogInSession(session: ClientSession, log: LogEntry): Promise<LogEntry> {
+    if (this.mongoDb) {
+      await this.mongoDb.collection('logbook').insertOne(log, { session });
+    }
+    if (this.data) {
+      this.data.logbook.unshift(log);
+      if (!this.mongoDb) await this.save();
+    }
+    return log;
+  }
+
+  /**
+   * Read-side counterpart of {@link addLog}. Returns logbook rows
+   * whose `details` field starts with the given prefix, sorted
+   * newest-first, capped at `opts.limit` (default 100, max 1000).
+   *
+   * Used by the vault's read-audit-history command to filter
+   * the `logbook` collection down to vault audit rows (the
+   * `details` prefix is `vault:`, set by the mapping helper at
+   * `backend/src/modules/vault/audit/logbook-entry.ts`).
+   *
+   * The query is a prefix match, not an exact match: the
+   * `details` string is `vault:<action> identity=<id> ...`, so
+   * the same `vault:` prefix covers every vault row regardless
+   * of action. Callers that need to filter further (e.g. by
+   * identityId) do so in application code, parsing the `details`
+   * field — see `parseVaultLogbookEntry` in the audit-log
+   * helper.
+   *
+   * Regex special characters in the prefix are escaped so a
+   * caller passing arbitrary text cannot inject a regex
+   * pattern. The file-fallback path does a plain
+   * `String.prototype.startsWith` check.
+   */
+  async listLogsByDetailsPrefix(
+    prefix: string,
+    opts: { limit?: number } = {},
+  ): Promise<LogEntry[]> {
+    const limit = Math.max(1, Math.min(opts.limit ?? 100, 1000));
+    if (this.mongoDb) {
+      const escaped = prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      return await this.mongoDb
+        .collection<LogEntry>('logbook')
+        .find({ details: { $regex: '^' + escaped } })
+        .sort({ timestamp: -1 })
+        .limit(limit)
+        .toArray();
+    }
+    const rows = (this.data?.logbook ?? []).filter((l) =>
+      typeof l.details === 'string' && l.details.startsWith(prefix),
+    );
+    rows.sort((a, b) =>
+      a.timestamp < b.timestamp ? 1 : a.timestamp > b.timestamp ? -1 : 0,
+    );
+    return rows.slice(0, limit);
+  }
+
   async addAnnouncement(ann: Announcement) {
-    this.data!.announcements.unshift(ann);
-    await this.save();
+    if (!this.mongoDb) {
+      if (this.data) {
+        this.data.announcements.unshift(ann);
+        await this.save();
+      }
+      return ann;
+    }
+    await this.mongoDb!.collection('announcements').insertOne(ann);
+    if (this.data) this.data.announcements.unshift(ann);
     return ann;
   }
 
+  // --- Intervention & Best Practice Methods ---
+
+  async getInterventions() {
+    if (!this.mongoDb) return this.data?.interventions || [];
+    return await this.mongoDb!.collection<Intervention>('interventions').find({}).toArray();
+  }
+
   async addIntervention(intervention: Intervention) {
-    this.data!.interventions.push(intervention);
-    await this.save();
+    if (!this.mongoDb) {
+      if (this.data) {
+        this.data.interventions.push(intervention);
+        await this.save();
+      }
+      return intervention;
+    }
+    await this.mongoDb!.collection('interventions').insertOne(intervention);
+    if (this.data) this.data.interventions.push(intervention);
     return intervention;
   }
 
   async updateIntervention(id: string, updates: Partial<Intervention>) {
-    const intervention = this.data!.interventions.find(item => item.id === id);
-    if (intervention) {
-      Object.assign(intervention, updates);
+    if (!this.mongoDb) {
+      const list = this.data?.interventions;
+      if (!list) return undefined;
+      const idx = list.findIndex(x => x.id === id);
+      if (idx === -1) return undefined;
+      list[idx] = { ...list[idx], ...updates };
       await this.save();
+      return list[idx];
     }
-    return intervention;
+    await this.mongoDb!.collection('interventions').updateOne({ id }, { $set: updates });
+    const i = await this.mongoDb!.collection<Intervention>('interventions').findOne({ id });
+    if (i && this.data) {
+      const idx = this.data.interventions.findIndex(x => x.id === id);
+      if (idx !== -1) this.data.interventions[idx] = i;
+    }
+    return i || undefined;
   }
 
-  async addBestPractice(bestPractice: BestPractice) {
-    this.data!.bestPractices.push(bestPractice);
-    await this.save();
-    return bestPractice;
+  async getBestPractices() {
+    if (!this.mongoDb) return this.data?.bestPractices || [];
+    return await this.mongoDb!.collection<BestPractice>('bestPractices').find({}).toArray();
+  }
+
+  async addBestPractice(bp: BestPractice) {
+    if (!this.mongoDb) {
+      if (this.data) {
+        this.data.bestPractices.push(bp);
+        await this.save();
+      }
+      return bp;
+    }
+    await this.mongoDb!.collection('bestPractices').insertOne(bp);
+    if (this.data) this.data.bestPractices.push(bp);
+    return bp;
   }
 
   async updateBestPractice(id: string, updates: Partial<BestPractice>) {
-    const bestPractice = this.data!.bestPractices.find(item => item.id === id);
-    if (bestPractice) {
-      Object.assign(bestPractice, updates);
+    if (!this.mongoDb) {
+      const list = this.data?.bestPractices;
+      if (!list) return undefined;
+      const idx = list.findIndex(x => x.id === id);
+      if (idx === -1) return undefined;
+      list[idx] = { ...list[idx], ...updates };
       await this.save();
+      return list[idx];
     }
-    return bestPractice;
+    await this.mongoDb!.collection('bestPractices').updateOne({ id }, { $set: updates });
+    const bp = await this.mongoDb!.collection<BestPractice>('bestPractices').findOne({ id });
+    if (bp && this.data) {
+      const idx = this.data.bestPractices.findIndex(x => x.id === id);
+      if (idx !== -1) this.data.bestPractices[idx] = bp;
+    }
+    return bp || undefined;
   }
+
+  // --- Question Logic Methods ---
+
+  /** Live logics only unless `includeDeleted`, since soft-deleted rows exist purely for audit. */
+  async getQuestionLogics(includeDeleted = false) {
+    if (!this.mongoDb) {
+      // Mirrors the Mongo query below: `{ deletedAt: null }` matches a null
+      // OR missing field (hence `==`), sorted by createdAt descending.
+      return (this.data?.questionLogics || [])
+        .filter(l => includeDeleted || l.deletedAt == null)
+        .sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0));
+    }
+    const filter = includeDeleted ? {} : { deletedAt: null };
+    return await this.mongoDb!.collection<QuestionLogic>('questionLogics')
+      .find(filter).sort({ createdAt: -1 }).toArray();
+  }
+
+  async getQuestionLogicById(id: string) {
+    if (!this.mongoDb) return this.data?.questionLogics.find(x => x.id === id) || undefined;
+    return (await this.mongoDb!.collection<QuestionLogic>('questionLogics').findOne({ id })) || undefined;
+  }
+
+  async addQuestionLogic(logic: QuestionLogic) {
+    if (!this.mongoDb) {
+      if (this.data) {
+        this.data.questionLogics.push(logic);
+        await this.save();
+      }
+      return logic;
+    }
+    await this.mongoDb!.collection('questionLogics').insertOne(logic);
+    if (this.data) this.data.questionLogics.push(logic);
+    return logic;
+  }
+
+  async updateQuestionLogic(id: string, updates: Partial<QuestionLogic>) {
+    if (!this.mongoDb) {
+      const list = this.data?.questionLogics;
+      if (!list) return undefined;
+      const idx = list.findIndex(x => x.id === id);
+      if (idx === -1) return undefined;
+      list[idx] = { ...list[idx], ...updates };
+      await this.save();
+      return list[idx];
+    }
+    await this.mongoDb!.collection('questionLogics').updateOne({ id }, { $set: updates });
+    const l = await this.mongoDb!.collection<QuestionLogic>('questionLogics').findOne({ id });
+    if (l && this.data) {
+      const idx = this.data.questionLogics.findIndex(x => x.id === id);
+      if (idx !== -1) this.data.questionLogics[idx] = l;
+    }
+    return l || undefined;
+  }
+
+  /**
+   * Counts for the header cards. `levelsWithLogic` is a distinct count over live
+   * rows — authoring five logics for one level still covers exactly one level.
+   */
+  async getQuestionLogicStats(totalLevels: number) {
+    if (!this.mongoDb) {
+      const live = (this.data?.questionLogics || []).filter(l => l.deletedAt == null);
+      return {
+        totalLogics: live.length,
+        totalLevels,
+        levelsWithLogic: new Set(live.map(l => l.level)).size,
+      };
+    }
+    const live = await this.mongoDb!.collection<QuestionLogic>('questionLogics')
+      .find({ deletedAt: null }).toArray();
+    return {
+      totalLogics: live.length,
+      totalLevels,
+      levelsWithLogic: new Set(live.map(l => l.level)).size,
+    };
+  }
+
+  // --- Question Template Methods ----------------------------------------
+  //
+  // Templates are addressed by `conceptId`. Nothing here takes a level number:
+  // levels are insertable and re-orderable, so a stored level number would be
+  // a reference that quietly stops meaning what it meant when it was written.
+
+  async getQuestionTemplates(includeDeleted = false) {
+    if (!this.mongoDb) {
+      return (this.data?.questionTemplates || [])
+        .filter(t => includeDeleted || t.deletedAt == null)
+        .sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0));
+    }
+    const filter = includeDeleted ? {} : { deletedAt: null };
+    return await this.mongoDb!.collection<QuestionTemplate>('questionTemplates')
+      .find(filter).sort({ createdAt: -1 }).toArray();
+  }
+
+  async getQuestionTemplateById(id: string) {
+    if (!this.mongoDb) return this.data?.questionTemplates.find(x => x.id === id) || undefined;
+    return (await this.mongoDb!.collection<QuestionTemplate>('questionTemplates').findOne({ id })) || undefined;
+  }
+
+  /** Every live question assessing a given concept — the direct "what tests S3.4" lookup, index-backed. */
+  async getQuestionTemplatesByConcept(conceptId: string) {
+    if (!this.mongoDb) return (this.data?.questionTemplates || []).filter(t => t.conceptId === conceptId && t.deletedAt == null);
+    return await this.mongoDb!.collection<QuestionTemplate>('questionTemplates')
+      .find({ conceptId, deletedAt: null }).toArray();
+  }
+
+  /**
+   * Every live question that lists `skillId` in either its primary or
+   * supporting skills. This is the key-value lookup the schema exists for:
+   * `skills`/`subskills` are multikey-indexed, so "which questions test
+   * SK18 (Patterns)" is one indexed query, never a scan across every
+   * question x skill combination.
+   */
+  async getQuestionTemplatesBySkill(skillId: string) {
+    if (!this.mongoDb) return (this.data?.questionTemplates || []).filter(t => (t.skills || []).includes(skillId) && t.deletedAt == null);
+    return await this.mongoDb!.collection<QuestionTemplate>('questionTemplates')
+      .find({ skills: skillId, deletedAt: null }).toArray();
+  }
+
+  /** Same lookup at subskill granularity, e.g. "SK18.08" (Identify pattern rule). */
+  async getQuestionTemplatesBySubskill(subskillId: string) {
+    if (!this.mongoDb) return (this.data?.questionTemplates || []).filter(t => (t.subskills || []).includes(subskillId) && t.deletedAt == null);
+    return await this.mongoDb!.collection<QuestionTemplate>('questionTemplates')
+      .find({ subskills: subskillId, deletedAt: null }).toArray();
+  }
+
+  /** Live templates sharing a variant fingerprint. Drives the duplicate warning. */
+  async getQuestionTemplatesByVariantKey(variantKey: string) {
+    if (!this.mongoDb) return (this.data?.questionTemplates || []).filter(t => t.variantKey === variantKey && t.deletedAt == null);
+    return await this.mongoDb!.collection<QuestionTemplate>('questionTemplates')
+      .find({ variantKey, deletedAt: null }).toArray();
+  }
+
+  async addQuestionTemplate(template: QuestionTemplate) {
+    if (!this.mongoDb) {
+      if (this.data) {
+        this.data.questionTemplates.push(template);
+        await this.save();
+      }
+      return template;
+    }
+    await this.mongoDb!.collection('questionTemplates').insertOne(template);
+    if (this.data) this.data.questionTemplates.push(template);
+    return template;
+  }
+
+  // --- Teacher Observation Record Methods --------------------------------
+  // See TeacherObservationRecord's own comment for why this is a separate
+  // collection from answerSubmissions/questionTemplates. Addressed by
+  // (studentId, conceptId, cycle) -- the unique index this file's init
+  // sequence creates on that triple is what makes `upsert` below safe as a
+  // real upsert rather than a document-growing append.
+
+  /** One student's ratings across every observed concept, for one cycle. */
+  async getObservationRecordsForStudent(studentId: string, cycle: string) {
+    if (!this.mongoDb) return (this.data?.teacherObservationRecords || []).filter(r => r.studentId === studentId && r.cycle === cycle);
+    return await this.mongoDb!.collection<TeacherObservationRecord>('teacher_observation_records')
+      .find({ studentId, cycle }).toArray();
+  }
+
+  /** A whole class's ratings on one concept, for one cycle -- the class-grid sheet's read path. */
+  async getObservationRecordsForClass(classId: string, cycle: string) {
+    if (!this.mongoDb) return (this.data?.teacherObservationRecords || []).filter(r => r.classId === classId && r.cycle === cycle);
+    return await this.mongoDb!.collection<TeacherObservationRecord>('teacher_observation_records')
+      .find({ classId, cycle }).toArray();
+  }
+
+  /**
+   * Record or update one teacher's rating. Upsert on (studentId, conceptId,
+   * cycle) so re-submitting the same class-grid sheet corrects a rating
+   * rather than duplicating it.
+   */
+  async upsertObservationRecord(record: TeacherObservationRecord) {
+    if (!this.mongoDb) {
+      if (this.data) {
+        const list = this.data.teacherObservationRecords;
+        const idx = list.findIndex(x => x.studentId === record.studentId && x.conceptId === record.conceptId && x.cycle === record.cycle);
+        if (idx === -1) list.push(record);
+        else list[idx] = { ...list[idx], ...record };
+        await this.save();
+      }
+      return record;
+    }
+    await this.mongoDb!.collection<TeacherObservationRecord>('teacher_observation_records').updateOne(
+      { studentId: record.studentId, conceptId: record.conceptId, cycle: record.cycle },
+      { $set: record },
+      { upsert: true }
+    );
+    return record;
+  }
+
+  // --- Attempt Record Methods (Evidence Model, #479) ----------------------
+  // See AttemptRecord's own comment for what this captures and why it's a
+  // separate collection from answerSubmissions.
+
+  /** Every attempt one student has made; richest-evidence-first filtering/sorting is left to callers. */
+  async getAttemptRecordsForStudent(studentId: string): Promise<AttemptRecord[]> {
+    if (!this.mongoDb) return (this.data?.attemptRecords || []).filter(a => a.studentId === studentId);
+    return await this.mongoDb!.collection<AttemptRecord>('attempt_records').find({ studentId }).toArray();
+  }
+
+  /** Append-only -- an attempt is a historical fact, not something a later attempt should overwrite. */
+  async addAttemptRecord(record: AttemptRecord): Promise<AttemptRecord> {
+    if (!this.mongoDb) {
+      if (this.data) {
+        if (!this.data.attemptRecords) this.data.attemptRecords = [];
+        this.data.attemptRecords.push(record);
+        await this.save();
+      }
+      return record;
+    }
+    await this.mongoDb!.collection('attempt_records').insertOne(record);
+    return record;
+  }
+
+  /**
+   * Insert a validated batch in one round trip.
+   *
+   * Callers validate every row before calling: a CSV import that writes half a
+   * file and then rejects the rest leaves the author reconciling two states by
+   * hand, which is worse than importing nothing.
+   */
+  async addQuestionTemplates(templates: QuestionTemplate[]) {
+    if (templates.length === 0) return [];
+    if (!this.mongoDb) {
+      if (this.data) {
+        this.data.questionTemplates.push(...templates);
+        await this.save();
+      }
+      return templates;
+    }
+    await this.mongoDb!.collection('questionTemplates').insertMany(templates as any[]);
+    if (this.data) this.data.questionTemplates.push(...templates);
+    return templates;
+  }
+
+  async updateQuestionTemplate(id: string, updates: Partial<QuestionTemplate>) {
+    if (!this.mongoDb) {
+      const list = this.data?.questionTemplates;
+      if (!list) return undefined;
+      const idx = list.findIndex(x => x.id === id);
+      if (idx === -1) return undefined;
+      list[idx] = { ...list[idx], ...updates };
+      await this.save();
+      return list[idx];
+    }
+    await this.mongoDb!.collection('questionTemplates').updateOne({ id }, { $set: updates });
+    const t = await this.mongoDb!.collection<QuestionTemplate>('questionTemplates').findOne({ id });
+    if (t && this.data) {
+      const idx = this.data.questionTemplates.findIndex(x => x.id === id);
+      if (idx !== -1) this.data.questionTemplates[idx] = t;
+    }
+    return t || undefined;
+  }
+
+  // --- Question Option Methods -------------------------------------------
+  //
+  // The catalogue of selectable values. Reads are hot (every form render) and
+  // the set is tiny, so these deliberately do no caching: correctness after a
+  // Superadmin adds a value matters more than saving a small query.
+
+  async getQuestionOptions(includeInactive = false) {
+    if (!this.mongoDb) {
+      // Mirrors `.find(filter).sort({ type: 1, key: 1 })` below.
+      return (this.data?.questionOptions || [])
+        .filter(o => includeInactive || o.active === true)
+        .sort((a, b) => (a.type !== b.type ? (a.type < b.type ? -1 : 1) : a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+    }
+    const filter = includeInactive ? {} : { active: true };
+    return await this.mongoDb!.collection<QuestionOption>('questionOptions')
+      .find(filter).sort({ type: 1, key: 1 }).toArray();
+  }
+
+  async getQuestionOptionById(id: string) {
+    if (!this.mongoDb) return this.data?.questionOptions.find(x => x.id === id) || undefined;
+    return (await this.mongoDb!.collection<QuestionOption>('questionOptions').findOne({ id })) || undefined;
+  }
+
+  /** Active row with this (type, key), if any. Used to reject duplicate keys. */
+  async getQuestionOptionByKey(type: QuestionOption['type'], key: string) {
+    if (!this.mongoDb) return this.data?.questionOptions.find(o => o.type === type && o.key === key && o.active === true) || undefined;
+    return (await this.mongoDb!.collection<QuestionOption>('questionOptions')
+      .findOne({ type, key, active: true })) || undefined;
+  }
+
+  async addQuestionOption(option: QuestionOption) {
+    if (!this.mongoDb) {
+      if (this.data) {
+        this.data.questionOptions.push(option);
+        await this.save();
+      }
+      return option;
+    }
+    await this.mongoDb!.collection('questionOptions').insertOne(option);
+    if (this.data) this.data.questionOptions.push(option);
+    return option;
+  }
+
+  async updateQuestionOption(id: string, updates: Partial<QuestionOption>) {
+    if (!this.mongoDb) {
+      const list = this.data?.questionOptions;
+      if (!list) return undefined;
+      const idx = list.findIndex(x => x.id === id);
+      if (idx === -1) return undefined;
+      list[idx] = { ...list[idx], ...updates };
+      await this.save();
+      return list[idx];
+    }
+    await this.mongoDb!.collection('questionOptions').updateOne({ id }, { $set: updates });
+    const o = await this.mongoDb!.collection<QuestionOption>('questionOptions').findOne({ id });
+    if (o && this.data) {
+      const idx = this.data.questionOptions.findIndex(x => x.id === id);
+      if (idx !== -1) this.data.questionOptions[idx] = o;
+    }
+    return o || undefined;
+  }
+
+  async getQuestionTemplateStats(totalLevels: number) {
+    if (!this.mongoDb) {
+      const live = (this.data?.questionTemplates || []).filter(t => t.deletedAt == null);
+      return {
+        totalTemplates: live.length,
+        totalLevels,
+        levelsWithTemplate: new Set(live.map(t => t.conceptId)).size,
+        distinctVariants: new Set(live.map(t => t.variantKey)).size,
+      };
+    }
+    const live = await this.mongoDb!.collection<QuestionTemplate>('questionTemplates')
+      .find({ deletedAt: null }).toArray();
+    return {
+      totalTemplates: live.length,
+      totalLevels,
+      levelsWithTemplate: new Set(live.map(t => t.conceptId)).size,
+      distinctVariants: new Set(live.map(t => t.variantKey)).size,
+    };
+  }
+
+  // --- Curriculum Level Methods ---
+  //
+  // The single accessor path for curriculum data. Anything that needs to reason
+  // about levels goes through here rather than hand-authoring a lookup table —
+  // a feature that cannot get what it needs from these is a signal the schema
+  // is missing a field, not licence to start a seventh copy of the taxonomy.
+
+  // --- Question bank review ---------------------------------------------
+  //
+  // The bank holds the concrete questions that already exist (levels 22-59 of
+  // the retired numbering). Mapping each one to a 93-space level is what lets
+  // the 59 space be retired WITHOUT a level-to-level crosswalk: content is
+  // addressed by the question's own tag rather than by the level it came from.
+
+  async getQuestionBank(opts: {
+    level?: number;
+    sectionType?: string;
+    status?: 'untagged' | 'mapped' | 'retired';
+    mappedLevel?: number;
+    limit?: number;
+    skip?: number;
+  } = {}) {
+    if (!this.mongoDb) {
+      let items = (this.data?.questionBank || []).slice();
+      if (opts.level !== undefined) items = items.filter(e => e.level === opts.level);
+      if (opts.sectionType) items = items.filter(e => e.sectionType === opts.sectionType);
+      if (opts.status) items = items.filter(e => e.reviewStatus === opts.status);
+      if (opts.mappedLevel !== undefined) items = items.filter(e => e.mappedLevel === opts.mappedLevel);
+      const total = items.length;
+      items.sort((a, b) => {
+        if (a.level !== b.level) return a.level - b.level;
+        if (a.section !== b.section) return (a.section < b.section ? -1 : 1);
+        return a.questionNumber - b.questionNumber;
+      });
+      const skip = opts.skip || 0;
+      const limit = opts.limit || 50;
+      return { items: items.slice(skip, skip + limit), total };
+    }
+    const filter: any = {};
+    if (opts.level !== undefined) filter.level = opts.level;
+    if (opts.sectionType) filter.sectionType = opts.sectionType;
+    if (opts.status) filter.reviewStatus = opts.status;
+    if (opts.mappedLevel !== undefined) filter.mappedLevel = opts.mappedLevel;
+    const coll = this.mongoDb!.collection<QuestionBankEntry>('questionBank');
+    const [items, total] = await Promise.all([
+      coll.find(filter).sort({ level: 1, section: 1, questionNumber: 1 })
+        .skip(opts.skip || 0).limit(opts.limit || 50).toArray(),
+      coll.countDocuments(filter),
+    ]);
+    return { items, total };
+  }
+
+  async getQuestionBankEntry(questionId: string) {
+    if (!this.mongoDb) {
+      return (this.data?.questionBank || []).find(e => e.questionId === questionId);
+    }
+    return (await this.mongoDb!.collection<QuestionBankEntry>('questionBank')
+      .findOne({ questionId })) || undefined;
+  }
+
+  /** Apply a review decision to one question. Returns the updated row. */
+  async reviewQuestion(questionId: string, patch: {
+    mappedLevel?: number | null;
+    conceptId?: string;
+    reviewStatus: 'untagged' | 'mapped' | 'retired';
+    reviewedBy: string;
+    reviewNote?: string;
+  }) {
+    if (!this.mongoDb) {
+      const entry = (this.data?.questionBank || []).find(e => e.questionId === questionId);
+      if (entry) {
+        Object.assign(entry, patch, { reviewedAt: new Date().toISOString() });
+        await this.save();
+      }
+      return entry;
+    }
+    const coll = this.mongoDb!.collection<QuestionBankEntry>('questionBank');
+    await coll.updateOne({ questionId }, {
+      $set: { ...patch, reviewedAt: new Date().toISOString() } as any,
+    });
+    return await this.getQuestionBankEntry(questionId);
+  }
+
+  /** Apply one decision to every question in a (level, section). */
+  async reviewQuestionsBulk(filter: { level: number; section?: string; sectionType?: string }, patch: {
+    mappedLevel?: number | null;
+    conceptId?: string;
+    reviewStatus: 'untagged' | 'mapped' | 'retired';
+    reviewedBy: string;
+  }) {
+    if (!this.mongoDb) {
+      const list = (this.data?.questionBank || []).filter(e => {
+        if (e.level !== filter.level) return false;
+        if (filter.section && e.section !== filter.section) return false;
+        if (filter.sectionType && e.sectionType !== filter.sectionType) return false;
+        return true;
+      });
+      const now = new Date().toISOString();
+      for (const entry of list) {
+        Object.assign(entry, patch, { reviewedAt: now });
+      }
+      if (list.length > 0) {
+        await this.save();
+      }
+      return { matched: list.length, modified: list.length };
+    }
+    const q: any = { level: filter.level };
+    if (filter.section) q.section = filter.section;
+    if (filter.sectionType) q.sectionType = filter.sectionType;
+    const res = await this.mongoDb!.collection<QuestionBankEntry>('questionBank').updateMany(q, {
+      $set: { ...patch, reviewedAt: new Date().toISOString() } as any,
+    });
+    return { matched: res.matchedCount, modified: res.modifiedCount };
+  }
+
+  /**
+   * Review progress, plus the shape of the work remaining.
+   *
+   * `legacyLevelsWithoutQuestions` is the honest other half: the bank only
+   * covers levels 22-59, so those legacy levels have nothing to tag and must be
+   * mapped level-to-level instead.
+   */
+  async getQuestionBankProgress() {
+    if (!this.mongoDb) {
+      const list = this.data?.questionBank || [];
+      const total = list.length;
+      const mapped = list.filter(e => e.reviewStatus === 'mapped').length;
+      const retired = list.filter(e => e.reviewStatus === 'retired').length;
+      const untagged = list.filter(e => e.reviewStatus === 'untagged').length;
+      const levels = Array.from(new Set(list.map(e => e.level))).sort((a, b) => a - b);
+      const targetLevelsCovered = Array.from(new Set(
+        list
+          .filter(e => e.reviewStatus === 'mapped' && typeof e.mappedLevel === 'number')
+          .map(e => e.mappedLevel as number)
+      )).sort((a, b) => a - b);
+      const byLevelMap = new Map<number, { total: number; mapped: number; retired: number }>();
+      for (const e of list) {
+        let stat = byLevelMap.get(e.level);
+        if (!stat) {
+          stat = { total: 0, mapped: 0, retired: 0 };
+          byLevelMap.set(e.level, stat);
+        }
+        stat.total++;
+        if (e.reviewStatus === 'mapped') stat.mapped++;
+        if (e.reviewStatus === 'retired') stat.retired++;
+      }
+      const byLevel = Array.from(byLevelMap.entries())
+        .sort((a, b) => a[0] - b[0])
+        .map(([level, stats]) => ({ level, ...stats }));
+      return {
+        total, mapped, retired, untagged,
+        legacyLevelsInBank: levels,
+        targetLevelsCovered,
+        byLevel,
+      };
+    }
+    const coll = this.mongoDb!.collection<QuestionBankEntry>('questionBank');
+    const [total, mapped, retired, untagged, levels, targets] = await Promise.all([
+      coll.countDocuments({}),
+      coll.countDocuments({ reviewStatus: 'mapped' }),
+      coll.countDocuments({ reviewStatus: 'retired' }),
+      coll.countDocuments({ reviewStatus: 'untagged' }),
+      coll.distinct('level'),
+      coll.distinct('mappedLevel', { reviewStatus: 'mapped' }),
+    ]);
+    const byLevel = await coll.aggregate([
+      { $group: {
+          _id: '$level',
+          total: { $sum: 1 },
+          mapped: { $sum: { $cond: [{ $eq: ['$reviewStatus', 'mapped'] }, 1, 0] } },
+          retired: { $sum: { $cond: [{ $eq: ['$reviewStatus', 'retired'] }, 1, 0] } },
+      } },
+      { $sort: { _id: 1 } },
+    ]).toArray();
+    return {
+      total, mapped, retired, untagged,
+      legacyLevelsInBank: levels.sort((a: number, b: number) => a - b),
+      targetLevelsCovered: (targets as (number | null)[]).filter((n): n is number => typeof n === 'number').sort((a, b) => a - b),
+      byLevel: byLevel.map((r: any) => ({ level: r._id, total: r.total, mapped: r.mapped, retired: r.retired })),
+    };
+  }
+
+  async getCurriculumLevels() {
+    if (!this.mongoDb) {
+      return [...(this.data?.curriculumLevels || [])].sort((a, b) => a.levelNumber - b.levelNumber);
+    }
+    return await this.mongoDb!.collection<CurriculumLevel>('curriculumLevels')
+      .find({}).sort({ levelNumber: 1 }).toArray();
+  }
+
+  async getCurriculumLevel(levelNumber: number) {
+    if (!this.mongoDb) {
+      return (this.data?.curriculumLevels || []).find(l => l.levelNumber === levelNumber);
+    }
+    return (await this.mongoDb!.collection<CurriculumLevel>('curriculumLevels')
+      .findOne({ levelNumber })) || undefined;
+  }
+
+  /** Look a level up by its permanent identity rather than by its position. */
+  async getCurriculumLevelByConceptId(conceptId: string) {
+    if (!this.mongoDb) {
+      return (this.data?.curriculumLevels || []).find(l => l.conceptId === conceptId);
+    }
+    return (await this.mongoDb!.collection<CurriculumLevel>('curriculumLevels')
+      .findOne({ conceptId })) || undefined;
+  }
+
+  /**
+   * Resolve a retired 1..59 worksheet-engine id to its 93-space level.
+   *
+   * Exists only for the migration window: call sites that still hold a 59-space
+   * number use this to translate rather than carrying their own mapping. When
+   * the last such call site is gone, this method and `legacyLevel59` go with it.
+   */
+  async getCurriculumLevelByLegacy59(legacyLevel59: number) {
+    if (!this.mongoDb) {
+      return (this.data?.curriculumLevels || []).find(l => l.legacyLevel59 === legacyLevel59);
+    }
+    return (await this.mongoDb!.collection<CurriculumLevel>('curriculumLevels')
+      .findOne({ legacyLevel59 })) || undefined;
+  }
+
+  /**
+   * Point a 93-space level at a retired 1-59 level, or clear the pointer.
+   *
+   * Passing `null` as the target clears whichever level currently claims
+   * `legacyLevel59`, so a mis-mapping can be undone without knowing where it
+   * landed.
+   */
+  async setCurriculumLegacyMapping(levelNumber: number | null, legacyLevel59: number) {
+    if (!this.mongoDb) {
+      const list = this.data?.curriculumLevels || [];
+      for (const l of list) {
+        if (l.legacyLevel59 === legacyLevel59) {
+          l.legacyLevel59 = null;
+        }
+      }
+      if (levelNumber !== null) {
+        const target = list.find(l => l.levelNumber === levelNumber);
+        if (target) {
+          target.legacyLevel59 = legacyLevel59;
+          target.updatedAt = new Date().toISOString();
+        }
+      }
+      await this.save();
+      return;
+    }
+    const coll = this.mongoDb!.collection<CurriculumLevel>('curriculumLevels');
+    // Only one 93-space level may claim a given legacy id.
+    await coll.updateMany({ legacyLevel59 }, { $set: { legacyLevel59: null } });
+    if (levelNumber !== null) {
+      await coll.updateOne({ levelNumber }, {
+        $set: { legacyLevel59, updatedAt: new Date().toISOString() },
+      });
+    }
+  }
+
+  /** Coverage summary — how much of the 93 can actually be rendered today. */
+  async getCurriculumCoverage() {
+    const levels = await this.getCurriculumLevels();
+    return {
+      totalLevels: levels.length,
+      withStaticHtml: levels.filter(l => l.hasStaticHtml).length,
+      withBuilder: levels.filter(l => l.hasBuilder).length,
+      withAnyContent: levels.filter(l => l.hasStaticHtml || l.hasBuilder).length,
+      mappedFromLegacy59: levels.filter(l => l.legacyLevel59 !== null).length,
+    };
+  }
+
+  // --- D1.6 Skill Evolution: Candidate Skills & Skills Methods (#481) ---
+
+  async addCandidateSkill(candidate: CandidateSkill): Promise<CandidateSkill> {
+    if (this.mongoDb) {
+      await this.mongoDb.collection<CandidateSkill>('candidate_skills').insertOne(candidate);
+    }
+    if (this.data) {
+      if (!this.data.candidateSkills) this.data.candidateSkills = [];
+      this.data.candidateSkills.push(candidate);
+      if (!this.mongoDb) await this.save();
+    }
+    return candidate;
+  }
+
+  async getCandidateSkills(filter?: { status?: CandidateSkillStatus; parentSkillId?: string }): Promise<CandidateSkill[]> {
+    if (this.mongoDb) {
+      const q: any = {};
+      if (filter?.status) q.status = filter.status;
+      if (filter?.parentSkillId) q.parentSkillId = filter.parentSkillId;
+      return await this.mongoDb.collection<CandidateSkill>('candidate_skills').find(q).sort({ createdAt: -1 }).toArray();
+    }
+    let list = this.data?.candidateSkills || [];
+    if (filter?.status) list = list.filter(c => c.status === filter.status);
+    if (filter?.parentSkillId) list = list.filter(c => c.parentSkillId === filter.parentSkillId);
+    return list;
+  }
+
+  async getCandidateSkillById(id: string): Promise<CandidateSkill | undefined> {
+    if (this.mongoDb) {
+      return (await this.mongoDb.collection<CandidateSkill>('candidate_skills').findOne({ id })) || undefined;
+    }
+    return (this.data?.candidateSkills || []).find(c => c.id === id);
+  }
+
+  async updateCandidateSkill(id: string, updates: Partial<CandidateSkill>): Promise<CandidateSkill | undefined> {
+    const updatedAt = new Date().toISOString();
+    const finalUpdates = { ...updates, updatedAt };
+    if (this.mongoDb) {
+      await this.mongoDb.collection<CandidateSkill>('candidate_skills').updateOne({ id }, { $set: finalUpdates });
+      return (await this.mongoDb.collection<CandidateSkill>('candidate_skills').findOne({ id })) || undefined;
+    }
+    const idx = (this.data?.candidateSkills || []).findIndex(c => c.id === id);
+    if (idx !== -1 && this.data) {
+      this.data.candidateSkills[idx] = { ...this.data.candidateSkills[idx], ...finalUpdates };
+      if (!this.mongoDb) await this.save();
+      return this.data.candidateSkills[idx];
+    }
+    return undefined;
+  }
+
+  async addSkill(skill: Skill): Promise<Skill> {
+    if (this.mongoDb) {
+      await this.mongoDb.collection<Skill>('skills').insertOne(skill);
+    }
+    if (this.data) {
+      if (!this.data.skills) this.data.skills = [];
+      this.data.skills.push(skill);
+      if (!this.mongoDb) await this.save();
+    }
+    return skill;
+  }
+
+  async getSkills(filter?: { parentSkillId?: string; validationStatus?: SkillValidationStatus }): Promise<Skill[]> {
+    if (this.mongoDb) {
+      const q: any = {};
+      if (filter?.parentSkillId) q.parentSkillId = filter.parentSkillId;
+      if (filter?.validationStatus) q.validationStatus = filter.validationStatus;
+      return await this.mongoDb.collection<Skill>('skills').find(q).sort({ id: 1 }).toArray();
+    }
+    let list = this.data?.skills || [];
+    if (filter?.parentSkillId) list = list.filter(s => s.parentSkillId === filter.parentSkillId);
+    if (filter?.validationStatus) list = list.filter(s => s.validationStatus === filter.validationStatus);
+    return list;
+  }
+
+  async getSkillById(id: string): Promise<Skill | undefined> {
+    if (this.mongoDb) {
+      return (await this.mongoDb.collection<Skill>('skills').findOne({ id })) || undefined;
+    }
+    return (this.data?.skills || []).find(s => s.id === id);
+  }
+
+  // --- Diagnostic Answer Key Methods ---
+
+  async addDiagnosticAnswerKey(key: DiagnosticAnswerKey) {
+    if (this.mongoDb) {
+      await this.mongoDb.collection('diagnostic_answer_keys').insertOne(key);
+    }
+    if (this.data) {
+      if (!this.data.diagnosticAnswerKeys) this.data.diagnosticAnswerKeys = [];
+      this.data.diagnosticAnswerKeys.push(key);
+    }
+    return key;
+  }
+
+  async getDiagnosticAnswerKeys(jobId: string): Promise<DiagnosticAnswerKey[]> {
+    if (this.mongoDb) {
+      return await this.mongoDb.collection<DiagnosticAnswerKey>('diagnostic_answer_keys').find({ jobId }).toArray();
+    }
+    return (this.data?.diagnosticAnswerKeys || []).filter(k => k.jobId === jobId);
+  }
+
+  async getStudentDiagnosticAnswerKey(studentId: string, jobId?: string): Promise<DiagnosticAnswerKey | null> {
+      if (this.mongoDb) {
+        const query: any = { studentId };
+        if (jobId) query.jobId = jobId;
+        return await this.mongoDb.collection<DiagnosticAnswerKey>('diagnostic_answer_keys').findOne(query, { sort: { createdAt: -1 } });
+      }
+      const keys = (this.data?.diagnosticAnswerKeys || []).filter(k => k.studentId === studentId && (!jobId || k.jobId === jobId));
+      return keys[keys.length - 1] || null;
+    }
+
+    // Fetch the latest diagnostic answer key for any student in a given class —
+    // used when a single sheet scan is performed without a specific student
+    // selected (the OCR can't ask "which student", so it grabs the most
+    // recently generated paper for that class). All students in the same class
+    // get the same paper up to per-student randomization, so this is a safe
+    // approximation when no per-student answer key is available.
+    async getLatestClassAnswerKey(classNumber: number): Promise<DiagnosticAnswerKey | null> {
+      if (this.mongoDb) {
+        return await this.mongoDb.collection<DiagnosticAnswerKey>('diagnostic_answer_keys')
+          .findOne({ classNumber }, { sort: { createdAt: -1 } });
+      }
+      const keys = (this.data?.diagnosticAnswerKeys || [])
+        .filter(k => k.classNumber === classNumber)
+        .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+      return keys[0] || null;
+    }
 
   // --- Preloaded Question Pool (Mathematical Curriculum Questions Classes 2-4) ---
   private getSeedQuestions(): Question[] {
@@ -685,7 +2919,6 @@ export class DBStore {
         question: 'Count the apples in the picture. How many apples are there?',
         answer: '5',
         answer_type: 'number',
-        question_format: 'fill_blank',
         topic: 'Number Sense',
         subtopic: 'Counting',
         difficulty: 'easy',
@@ -697,7 +2930,6 @@ export class DBStore {
         question: 'Count the circles and write the total number.',
         answer: '3',
         answer_type: 'number',
-        question_format: 'fill_blank',
         topic: 'Shapes',
         subtopic: 'Recognition',
         difficulty: 'easy',
@@ -710,7 +2942,6 @@ export class DBStore {
         question: 'Calculate: 3 + 4 = ?',
         answer: '7',
         answer_type: 'number',
-        question_format: 'fill_blank',
         topic: 'Number Operations',
         subtopic: 'Addition',
         difficulty: 'easy',
@@ -722,7 +2953,6 @@ export class DBStore {
         question: 'Complete the pattern: Red Circle, Blue Circle, Red Circle, ?',
         answer: 'Blue Circle',
         answer_type: 'choice',
-        question_format: 'multiple_choice',
         choices: ['Red Circle', 'Blue Circle', 'Green Circle'],
         topic: 'Patterns',
         subtopic: 'Completing Patterns',
@@ -730,36 +2960,12 @@ export class DBStore {
         source_level: 2,
         svgAsset: 'shapes'
       },
-      {
-        question_id: 'L2_Q3',
-        question: 'Write the number name for 14.',
-        answer: 'fourteen',
-        answer_type: 'text',
-        question_format: 'text',
-        topic: 'Number Sense',
-        subtopic: 'Number Names',
-        difficulty: 'easy',
-        source_level: 2
-      },
-      {
-        question_id: 'L2_Q4',
-        question: 'Match each number name with its numeral.',
-        answer: 'One=1, Three=3, Five=5',
-        answer_type: 'text',
-        question_format: 'match_pair',
-        choices: ['One = 1', 'Three = 3', 'Five = 5'],
-        topic: 'Number Sense',
-        subtopic: 'Match Pairs',
-        difficulty: 'easy',
-        source_level: 2
-      },
       // Level 3: Class 2 Measurement, Time, Simple Operations
       {
         question_id: 'L3_Q1',
         question: 'If a pencil is 8 centimeters long and we cut 3 centimeters off, how long is it now?',
         answer: '5',
         answer_type: 'number',
-        question_format: 'fill_blank',
         topic: 'Measurement',
         subtopic: 'Length Subtraction',
         difficulty: 'medium',
@@ -771,7 +2977,6 @@ export class DBStore {
         question: 'Look at the clock. If the short hand points to 3 and the long hand points to 12, what hour is it?',
         answer: '3',
         answer_type: 'number',
-        question_format: 'fill_blank',
         topic: 'Calendar and Time',
         subtopic: 'Reading Hours',
         difficulty: 'easy',
@@ -784,7 +2989,6 @@ export class DBStore {
         question: 'Ramu has a pizza cut into 4 equal slices. He eats 1 slice. What fraction of the pizza is left?',
         answer: '3/4',
         answer_type: 'choice',
-        question_format: 'multiple_choice',
         choices: ['1/4', '2/4', '3/4', '4/4'],
         topic: 'Fractions',
         subtopic: 'Fraction Representation',
@@ -797,7 +3001,6 @@ export class DBStore {
         question: 'You buy a toy for 15 rupees and give the shopkeeper a 50-rupee note. How many rupees do you get back?',
         answer: '35',
         answer_type: 'number',
-        question_format: 'fill_blank',
         topic: 'Money',
         subtopic: 'Transaction Change',
         difficulty: 'hard',
@@ -810,7 +3013,6 @@ export class DBStore {
         question: 'Multiply: 12 x 5 = ?',
         answer: '60',
         answer_type: 'number',
-        question_format: 'fill_blank',
         topic: 'Number Operations',
         subtopic: 'Multiplication',
         difficulty: 'easy',
@@ -822,7 +3024,6 @@ export class DBStore {
         question: 'In a class there are 5 benches. Each bench holds 4 students. How many students can sit in total?',
         answer: '20',
         answer_type: 'number',
-        question_format: 'fill_blank',
         topic: 'Data Handling',
         subtopic: 'Simple Arithmetic Multiplication',
         difficulty: 'medium',
@@ -835,7 +3036,6 @@ export class DBStore {
         question: 'Divide: 48 / 6 = ?',
         answer: '8',
         answer_type: 'number',
-        question_format: 'fill_blank',
         topic: 'Number Operations',
         subtopic: 'Division',
         difficulty: 'medium',
@@ -847,7 +3047,6 @@ export class DBStore {
         question: 'If July 1st is a Monday, what day of the week is July 8th?',
         answer: 'Monday',
         answer_type: 'choice',
-        question_format: 'multiple_choice',
         choices: ['Monday', 'Tuesday', 'Sunday', 'Wednesday'],
         topic: 'Calendar and Time',
         subtopic: 'Calendar Arithmetic',
@@ -897,10 +3096,10 @@ export class DBStore {
       { id: 'u6_amb', email: 'gps-amb-003.t01@fln.org', name: 'Meena Kumari (Teacher)', role: UserRole.TEACHER, schoolId: 'gps-amb-003' },
       { id: 'u6_jai', email: 'gps-jai-004.t01@fln.org', name: 'Ram Gopal (Teacher)', role: UserRole.TEACHER, schoolId: 'gps-jai-004' },
       { id: 'u6_lko', email: 'gps-lko-005.t01@fln.org', name: 'Suresh Kumar (Teacher)', role: UserRole.TEACHER, schoolId: 'gps-lko-005' },
-      { id: 'u7', email: 'vol.rahul@fln.org', name: 'Rahul Kumar (Volunteer)', role: UserRole.VOLUNTEER, assignedSchools: ['gps-vl-002'] },
+      { id: 'u7', email: 'vol.rahul@fln.org', name: 'Punjab Volunteer (Rahul)', role: UserRole.VOLUNTEER, assignedSchools: ['gps-vl-002'] },
       { id: 'u7_amit', email: 'vol.amit@fln.org', name: 'Amit Saini (Volunteer)', role: UserRole.VOLUNTEER, assignedSchools: ['gps-vl-002', 'gps-jai-004'] },
       { id: 'u7_sneha', email: 'vol.up_sneha@fln.org', name: 'Sneha Verma (Volunteer)', role: UserRole.VOLUNTEER, assignedSchools: ['gps-lko-005'] },
-      { id: 'u7_vipin', email: 'vol.hr_vipin@fln.org', name: 'Vipin Yadav (Volunteer)', role: UserRole.VOLUNTEER, assignedSchools: ['gps-amb-003'] },
+      { id: 'u7_vipin', email: 'vol.hr_vipin@fln.org', name: 'Haryana Volunteer (Vipin)', role: UserRole.VOLUNTEER, assignedSchools: ['gps-amb-003'] },
       // District admins for new districts
       { id: 'u3_bth', email: 'district.bth@fln.org', name: 'Bathinda District Officer', role: UserRole.DISTRICT_ADMIN, stateCode: 'PB', districtCode: 'BTH' },
       { id: 'u3_asr', email: 'district.asr@fln.org', name: 'Amritsar District Officer', role: UserRole.DISTRICT_ADMIN, stateCode: 'PB', districtCode: 'ASR' },
@@ -947,6 +3146,9 @@ export class DBStore {
       { id: 'u7_ldh2_vol', email: 'vol.ldh2@fln.org', name: 'Gurpreet Kaur (Volunteer)', role: UserRole.VOLUNTEER, assignedSchools: ['gps-pb-ldh2-013'] }
     ];
 
+    // Give every seeded account the shared demo password as a bcrypt hash.
+    users.forEach(u => { u.passwordHash = SEED_DEMO_PASSWORD_HASH; });
+
     const classes: ClassGroup[] = [
       { id: 'c1', schoolId: 'gps-mt-001', className: 'Class 2', section: 'A', teacherId: 'u6' },
       { id: 'c2', schoolId: 'gps-mt-001', className: 'Class 3', section: 'A', teacherId: 'u6' },
@@ -982,8 +3184,7 @@ export class DBStore {
         currentLevel: 2,
         targetLevel: 3,
         aadharMasked: 'XXXX-XXXX-4521',
-        levelHistory: [{ level: 1, date: '2026-04-10', reason: 'Onboarding Diagnostic Placement' }],
-        streak: 5
+        levelHistory: [{ level: 1, date: '2026-04-10', reason: 'Baseline' }],
       },
       {
         id: 's2',
@@ -996,8 +3197,7 @@ export class DBStore {
         currentLevel: 3,
         targetLevel: 4,
         aadharMasked: 'XXXX-XXXX-9874',
-        levelHistory: [{ level: 2, date: '2026-04-10', reason: 'Onboarding Diagnostic Placement' }],
-        streak: 3
+        levelHistory: [{ level: 2, date: '2026-04-10', reason: 'Baseline' }],
       },
       {
         id: 's3',
@@ -1010,8 +3210,7 @@ export class DBStore {
         currentLevel: 4,
         targetLevel: 5,
         aadharMasked: 'XXXX-XXXX-1122',
-        levelHistory: [{ level: 3, date: '2026-04-10', reason: 'Onboarding Diagnostic Placement' }],
-        streak: 7
+        levelHistory: [{ level: 3, date: '2026-04-10', reason: 'Baseline' }],
       },
       {
         id: 's4',
@@ -1023,8 +3222,7 @@ export class DBStore {
         currentLevel: 1,
         targetLevel: 2,
         aadharMasked: 'XXXX-XXXX-5566',
-        levelHistory: [{ level: 1, date: '2026-05-15', reason: 'Volunteer Diagnostic Placement' }],
-        streak: 1
+        levelHistory: [{ level: 1, date: '2026-05-15', reason: 'Baseline' }],
       },
       {
         id: 's5',
@@ -1036,8 +3234,7 @@ export class DBStore {
         currentLevel: 2,
         targetLevel: 3,
         aadharMasked: 'XXXX-XXXX-8811',
-        levelHistory: [{ level: 1, date: '2026-05-20', reason: 'Volunteer Diagnostic Placement' }],
-        streak: 2
+        levelHistory: [{ level: 1, date: '2026-05-20', reason: 'Baseline' }],
       },
       {
         id: 's6',
@@ -1050,8 +3247,7 @@ export class DBStore {
         currentLevel: 3,
         targetLevel: 4,
         aadharMasked: 'XXXX-XXXX-7231',
-        levelHistory: [{ level: 2, date: '2026-06-01', reason: 'Onboarding Diagnostic Placement' }],
-        streak: 4
+        levelHistory: [{ level: 2, date: '2026-06-01', reason: 'Baseline' }],
       },
       {
         id: 's7',
@@ -1064,8 +3260,7 @@ export class DBStore {
         currentLevel: 5,
         targetLevel: 6,
         aadharMasked: 'XXXX-XXXX-1002',
-        levelHistory: [{ level: 3, date: '2026-06-01', reason: 'Onboarding Diagnostic Placement' }],
-        streak: 9
+        levelHistory: [{ level: 3, date: '2026-06-01', reason: 'Baseline' }],
       },
       {
         id: 's8',
@@ -1078,8 +3273,7 @@ export class DBStore {
         currentLevel: 2,
         targetLevel: 3,
         aadharMasked: 'XXXX-XXXX-3490',
-        levelHistory: [{ level: 2, date: '2026-06-01', reason: 'Onboarding Diagnostic Placement' }],
-        streak: 3
+        levelHistory: [{ level: 2, date: '2026-06-01', reason: 'Baseline' }],
       },
       {
         id: 's9',
@@ -1092,8 +3286,7 @@ export class DBStore {
         currentLevel: 4,
         targetLevel: 5,
         aadharMasked: 'XXXX-XXXX-1992',
-        levelHistory: [{ level: 3, date: '2026-06-15', reason: 'Onboarding Diagnostic Placement' }],
-        streak: 6
+        levelHistory: [{ level: 3, date: '2026-06-15', reason: 'Baseline' }],
       },
       {
         id: 's10',
@@ -1106,8 +3299,7 @@ export class DBStore {
         currentLevel: 5,
         targetLevel: 6,
         aadharMasked: 'XXXX-XXXX-8822',
-        levelHistory: [{ level: 4, date: '2026-06-15', reason: 'Onboarding Diagnostic Placement' }],
-        streak: 11
+        levelHistory: [{ level: 4, date: '2026-06-15', reason: 'Baseline' }],
       },
       {
         id: 's11',
@@ -1120,8 +3312,7 @@ export class DBStore {
         currentLevel: 3,
         targetLevel: 4,
         aadharMasked: 'XXXX-XXXX-3344',
-        levelHistory: [{ level: 2, date: '2026-06-15', reason: 'Onboarding Diagnostic Placement' }],
-        streak: 5
+        levelHistory: [{ level: 2, date: '2026-06-15', reason: 'Baseline' }],
       },
       {
         id: 's12',
@@ -1133,8 +3324,7 @@ export class DBStore {
         currentLevel: 1,
         targetLevel: 2,
         aadharMasked: 'XXXX-XXXX-4545',
-        levelHistory: [{ level: 1, date: '2026-06-05', reason: 'Volunteer Diagnostic Placement' }],
-        streak: 2
+        levelHistory: [{ level: 1, date: '2026-06-05', reason: 'Baseline' }],
       },
       {
         id: 's13',
@@ -1146,8 +3336,7 @@ export class DBStore {
         currentLevel: 2,
         targetLevel: 3,
         aadharMasked: 'XXXX-XXXX-2121',
-        levelHistory: [{ level: 1, date: '2026-06-05', reason: 'Volunteer Diagnostic Placement' }],
-        streak: 3
+        levelHistory: [{ level: 1, date: '2026-06-05', reason: 'Baseline' }],
       },
       {
         id: 's14',
@@ -1160,8 +3349,7 @@ export class DBStore {
         currentLevel: 3,
         targetLevel: 4,
         aadharMasked: 'XXXX-XXXX-1155',
-        levelHistory: [{ level: 2, date: '2026-06-20', reason: 'Onboarding Diagnostic Placement' }],
-        streak: 6
+        levelHistory: [{ level: 2, date: '2026-06-20', reason: 'Baseline' }],
       },
       {
         id: 's15',
@@ -1174,8 +3362,7 @@ export class DBStore {
         currentLevel: 4,
         targetLevel: 5,
         aadharMasked: 'XXXX-XXXX-2266',
-        levelHistory: [{ level: 3, date: '2026-06-20', reason: 'Onboarding Diagnostic Placement' }],
-        streak: 8
+        levelHistory: [{ level: 3, date: '2026-06-20', reason: 'Baseline' }],
       },
       {
         id: 's16',
@@ -1188,8 +3375,7 @@ export class DBStore {
         currentLevel: 5,
         targetLevel: 6,
         aadharMasked: 'XXXX-XXXX-3377',
-        levelHistory: [{ level: 4, date: '2026-06-20', reason: 'Onboarding Diagnostic Placement' }],
-        streak: 12
+        levelHistory: [{ level: 4, date: '2026-06-20', reason: 'Baseline' }],
       },
       // ── Unplaced students (empty levelHistory) for Pending Diagnostics ──
       {
@@ -1203,7 +3389,6 @@ export class DBStore {
         targetLevel: 2,
         aadharMasked: 'XXXX-XXXX-6677',
         levelHistory: [],
-        streak: 0
       },
       {
         id: 's_new_2',
@@ -1216,7 +3401,6 @@ export class DBStore {
         targetLevel: 2,
         aadharMasked: 'XXXX-XXXX-7788',
         levelHistory: [],
-        streak: 0
       },
       {
         id: 's_new_3',
@@ -1230,7 +3414,6 @@ export class DBStore {
         targetLevel: 2,
         aadharMasked: 'XXXX-XXXX-8899',
         levelHistory: [],
-        streak: 0
       },
       {
         id: 's_new_4',
@@ -1244,7 +3427,6 @@ export class DBStore {
         targetLevel: 2,
         aadharMasked: 'XXXX-XXXX-9900',
         levelHistory: [],
-        streak: 0
       },
       {
         id: 's_new_5',
@@ -1258,7 +3440,6 @@ export class DBStore {
         targetLevel: 2,
         aadharMasked: 'XXXX-XXXX-1100',
         levelHistory: [],
-        streak: 0
       },
       // ── Additional placed students at Level 8 ──
       {
@@ -1273,8 +3454,7 @@ export class DBStore {
         currentSubLevel: 0,
         targetLevel: 9,
         aadharMasked: 'XXXX-XXXX-1201',
-        levelHistory: [{ level: 4, date: '2026-04-15', reason: 'Onboarding Diagnostic Placement' }, { level: 6, date: '2026-05-20', reason: 'Mid-year worksheet performance' }, { level: 8, date: '2026-07-01', reason: 'End-of-year worksheet performance' }],
-        streak: 15
+        levelHistory: [{ level: 4, date: '2026-04-15', reason: 'Baseline' }, { level: 6, date: '2026-05-20', reason: 'Mid-year' }, { level: 8, date: '2026-07-01', reason: 'End-of-year' }],
       },
       {
         id: 's18',
@@ -1288,8 +3468,7 @@ export class DBStore {
         currentSubLevel: 1,
         targetLevel: 9,
         aadharMasked: 'XXXX-XXXX-1202',
-        levelHistory: [{ level: 3, date: '2026-05-01', reason: 'Onboarding Diagnostic Placement' }, { level: 5, date: '2026-06-10', reason: 'Baseline worksheet' }, { level: 8, date: '2026-07-03', reason: 'Mid-year worksheet' }],
-        streak: 10
+        levelHistory: [{ level: 3, date: '2026-05-01', reason: 'Baseline' }, { level: 5, date: '2026-06-10', reason: 'Baseline' }, { level: 8, date: '2026-07-03', reason: 'Mid-year' }],
       },
       {
         id: 's19',
@@ -1303,8 +3482,7 @@ export class DBStore {
         currentSubLevel: 2,
         targetLevel: 9,
         aadharMasked: 'XXXX-XXXX-1203',
-        levelHistory: [{ level: 2, date: '2026-04-20', reason: 'Onboarding Diagnostic Placement' }, { level: 8, date: '2026-06-25', reason: 'Remedial intervention' }],
-        streak: 6
+        levelHistory: [{ level: 2, date: '2026-04-20', reason: 'Baseline' }, { level: 8, date: '2026-06-25', reason: 'Remedial intervention' }],
       },
       // ── Students at Level 10 ──
       {
@@ -1319,8 +3497,7 @@ export class DBStore {
         currentSubLevel: 0,
         targetLevel: 11,
         aadharMasked: 'XXXX-XXXX-1204',
-        levelHistory: [{ level: 5, date: '2026-04-10', reason: 'Onboarding Diagnostic Placement' }, { level: 7, date: '2026-05-15', reason: 'Baseline worksheet' }, { level: 10, date: '2026-06-30', reason: 'Mid-year worksheet' }],
-        streak: 18
+        levelHistory: [{ level: 5, date: '2026-04-10', reason: 'Baseline' }, { level: 7, date: '2026-05-15', reason: 'Baseline' }, { level: 10, date: '2026-06-30', reason: 'Mid-year' }],
       },
       {
         id: 's21',
@@ -1334,8 +3511,7 @@ export class DBStore {
         currentSubLevel: 0,
         targetLevel: 11,
         aadharMasked: 'XXXX-XXXX-1205',
-        levelHistory: [{ level: 6, date: '2026-05-05', reason: 'Onboarding Diagnostic Placement' }, { level: 8, date: '2026-06-01', reason: 'Baseline worksheet' }, { level: 10, date: '2026-07-02', reason: 'Mid-year worksheet' }],
-        streak: 14
+        levelHistory: [{ level: 6, date: '2026-05-05', reason: 'Baseline' }, { level: 8, date: '2026-06-01', reason: 'Baseline' }, { level: 10, date: '2026-07-02', reason: 'Mid-year' }],
       },
       // ── Students at Level 12 ──
       {
@@ -1350,8 +3526,7 @@ export class DBStore {
         currentSubLevel: 0,
         targetLevel: 13,
         aadharMasked: 'XXXX-XXXX-1206',
-        levelHistory: [{ level: 7, date: '2026-04-25', reason: 'Onboarding Diagnostic Placement' }, { level: 10, date: '2026-06-05', reason: 'Baseline worksheet' }, { level: 12, date: '2026-07-04', reason: 'Mid-year worksheet' }],
-        streak: 20
+        levelHistory: [{ level: 7, date: '2026-04-25', reason: 'Baseline' }, { level: 10, date: '2026-06-05', reason: 'Baseline' }, { level: 12, date: '2026-07-04', reason: 'Mid-year' }],
       },
       {
         id: 's23',
@@ -1365,8 +3540,7 @@ export class DBStore {
         currentSubLevel: 0,
         targetLevel: 13,
         aadharMasked: 'XXXX-XXXX-1207',
-        levelHistory: [{ level: 8, date: '2026-05-10', reason: 'Onboarding Diagnostic Placement' }, { level: 12, date: '2026-06-28', reason: 'Baseline worksheet' }],
-        streak: 11
+        levelHistory: [{ level: 8, date: '2026-05-10', reason: 'Baseline' }, { level: 12, date: '2026-06-28', reason: 'Baseline' }],
       },
       // ── Students at Level 15 ──
       {
@@ -1381,8 +3555,7 @@ export class DBStore {
         currentSubLevel: 0,
         targetLevel: 16,
         aadharMasked: 'XXXX-XXXX-1208',
-        levelHistory: [{ level: 8, date: '2026-04-10', reason: 'Onboarding Diagnostic Placement' }, { level: 11, date: '2026-05-20', reason: 'Baseline worksheet' }, { level: 15, date: '2026-07-01', reason: 'Mid-year worksheet' }],
-        streak: 25
+        levelHistory: [{ level: 8, date: '2026-04-10', reason: 'Baseline' }, { level: 11, date: '2026-05-20', reason: 'Baseline' }, { level: 15, date: '2026-07-01', reason: 'Mid-year' }],
       },
       {
         id: 's25',
@@ -1396,8 +3569,7 @@ export class DBStore {
         currentSubLevel: 1,
         targetLevel: 16,
         aadharMasked: 'XXXX-XXXX-1209',
-        levelHistory: [{ level: 10, date: '2026-05-15', reason: 'Onboarding Diagnostic Placement' }, { level: 15, date: '2026-07-02', reason: 'Baseline worksheet' }],
-        streak: 8
+        levelHistory: [{ level: 10, date: '2026-05-15', reason: 'Baseline' }, { level: 15, date: '2026-07-02', reason: 'Baseline' }],
       },
       // ── Students at various other levels ──
       {
@@ -1412,8 +3584,7 @@ export class DBStore {
         currentSubLevel: 0,
         targetLevel: 6,
         aadharMasked: 'XXXX-XXXX-1210',
-        levelHistory: [{ level: 2, date: '2026-04-10', reason: 'Onboarding Diagnostic Placement' }, { level: 5, date: '2026-06-20', reason: 'Baseline worksheet' }],
-        streak: 7
+        levelHistory: [{ level: 2, date: '2026-04-10', reason: 'Baseline' }, { level: 5, date: '2026-06-20', reason: 'Baseline' }],
       },
       {
         id: 's27',
@@ -1426,8 +3597,7 @@ export class DBStore {
         currentSubLevel: 0,
         targetLevel: 4,
         aadharMasked: 'XXXX-XXXX-1211',
-        levelHistory: [{ level: 1, date: '2026-05-15', reason: 'Volunteer Diagnostic Placement' }, { level: 3, date: '2026-06-25', reason: 'Baseline worksheet' }],
-        streak: 4
+        levelHistory: [{ level: 1, date: '2026-05-15', reason: 'Baseline' }, { level: 3, date: '2026-06-25', reason: 'Baseline' }],
       },
       {
         id: 's28',
@@ -1441,8 +3611,7 @@ export class DBStore {
         currentSubLevel: 0,
         targetLevel: 7,
         aadharMasked: 'XXXX-XXXX-1212',
-        levelHistory: [{ level: 2, date: '2026-05-01', reason: 'Onboarding Diagnostic Placement' }, { level: 4, date: '2026-06-05', reason: 'Baseline worksheet' }, { level: 6, date: '2026-07-01', reason: 'Mid-year worksheet' }],
-        streak: 9
+        levelHistory: [{ level: 2, date: '2026-05-01', reason: 'Baseline' }, { level: 4, date: '2026-06-05', reason: 'Baseline' }, { level: 6, date: '2026-07-01', reason: 'Mid-year' }],
       },
       {
         id: 's29',
@@ -1456,8 +3625,7 @@ export class DBStore {
         currentSubLevel: 1,
         targetLevel: 5,
         aadharMasked: 'XXXX-XXXX-1213',
-        levelHistory: [{ level: 1, date: '2026-05-20', reason: 'Volunteer Diagnostic Placement' }, { level: 4, date: '2026-07-02', reason: 'Baseline worksheet' }],
-        streak: 3
+        levelHistory: [{ level: 1, date: '2026-05-20', reason: 'Baseline' }, { level: 4, date: '2026-07-02', reason: 'Baseline' }],
       },
       {
         id: 's30',
@@ -1471,8 +3639,7 @@ export class DBStore {
         currentSubLevel: 0,
         targetLevel: 8,
         aadharMasked: 'XXXX-XXXX-1214',
-        levelHistory: [{ level: 3, date: '2026-04-25', reason: 'Onboarding Diagnostic Placement' }, { level: 5, date: '2026-06-01', reason: 'Baseline worksheet' }, { level: 7, date: '2026-07-03', reason: 'Mid-year worksheet' }],
-        streak: 12
+        levelHistory: [{ level: 3, date: '2026-04-25', reason: 'Baseline' }, { level: 5, date: '2026-06-01', reason: 'Baseline' }, { level: 7, date: '2026-07-03', reason: 'Mid-year' }],
       },
       {
         id: 's31',
@@ -1486,8 +3653,7 @@ export class DBStore {
         currentSubLevel: 2,
         targetLevel: 7,
         aadharMasked: 'XXXX-XXXX-1215',
-        levelHistory: [{ level: 2, date: '2026-04-20', reason: 'Onboarding Diagnostic Placement' }, { level: 6, date: '2026-06-18', reason: 'Baseline worksheet' }],
-        streak: 5
+        levelHistory: [{ level: 2, date: '2026-04-20', reason: 'Baseline' }, { level: 6, date: '2026-06-18', reason: 'Baseline' }],
       },
       {
         id: 's32',
@@ -1501,8 +3667,7 @@ export class DBStore {
         currentSubLevel: 0,
         targetLevel: 10,
         aadharMasked: 'XXXX-XXXX-1216',
-        levelHistory: [{ level: 5, date: '2026-05-05', reason: 'Onboarding Diagnostic Placement' }, { level: 7, date: '2026-06-10', reason: 'Baseline worksheet' }, { level: 9, date: '2026-07-02', reason: 'Mid-year worksheet' }],
-        streak: 13
+        levelHistory: [{ level: 5, date: '2026-05-05', reason: 'Baseline' }, { level: 7, date: '2026-06-10', reason: 'Baseline' }, { level: 9, date: '2026-07-02', reason: 'Mid-year' }],
       },
       {
         id: 's33',
@@ -1516,8 +3681,7 @@ export class DBStore {
         currentSubLevel: 0,
         targetLevel: 12,
         aadharMasked: 'XXXX-XXXX-1217',
-        levelHistory: [{ level: 6, date: '2026-05-10', reason: 'Onboarding Diagnostic Placement' }, { level: 8, date: '2026-06-15', reason: 'Baseline worksheet' }, { level: 11, date: '2026-07-04', reason: 'Mid-year worksheet' }],
-        streak: 16
+        levelHistory: [{ level: 6, date: '2026-05-10', reason: 'Baseline' }, { level: 8, date: '2026-06-15', reason: 'Baseline' }, { level: 11, date: '2026-07-04', reason: 'Mid-year' }],
       },
       {
         id: 's34',
@@ -1531,8 +3695,7 @@ export class DBStore {
         currentSubLevel: 0,
         targetLevel: 8,
         aadharMasked: 'XXXX-XXXX-1218',
-        levelHistory: [{ level: 3, date: '2026-05-20', reason: 'Onboarding Diagnostic Placement' }, { level: 7, date: '2026-07-01', reason: 'Baseline worksheet' }],
-        streak: 8
+        levelHistory: [{ level: 3, date: '2026-05-20', reason: 'Baseline' }, { level: 7, date: '2026-07-01', reason: 'Baseline' }],
       },
       {
         id: 's35',
@@ -1546,8 +3709,7 @@ export class DBStore {
         currentSubLevel: 1,
         targetLevel: 12,
         aadharMasked: 'XXXX-XXXX-1219',
-        levelHistory: [{ level: 6, date: '2026-05-15', reason: 'Onboarding Diagnostic Placement' }, { level: 9, date: '2026-06-20', reason: 'Baseline worksheet' }, { level: 11, date: '2026-07-03', reason: 'Mid-year worksheet' }],
-        streak: 9
+        levelHistory: [{ level: 6, date: '2026-05-15', reason: 'Baseline' }, { level: 9, date: '2026-06-20', reason: 'Baseline' }, { level: 11, date: '2026-07-03', reason: 'Mid-year' }],
       },
       {
         id: 's36',
@@ -1561,8 +3723,7 @@ export class DBStore {
         currentSubLevel: 0,
         targetLevel: 14,
         aadharMasked: 'XXXX-XXXX-1220',
-        levelHistory: [{ level: 8, date: '2026-05-01', reason: 'Onboarding Diagnostic Placement' }, { level: 11, date: '2026-06-10', reason: 'Baseline worksheet' }, { level: 13, date: '2026-07-02', reason: 'Mid-year worksheet' }],
-        streak: 17
+        levelHistory: [{ level: 8, date: '2026-05-01', reason: 'Baseline' }, { level: 11, date: '2026-06-10', reason: 'Baseline' }, { level: 13, date: '2026-07-02', reason: 'Mid-year' }],
       },
       {
         id: 's37',
@@ -1576,8 +3737,7 @@ export class DBStore {
         currentSubLevel: 0,
         targetLevel: 15,
         aadharMasked: 'XXXX-XXXX-1221',
-        levelHistory: [{ level: 9, date: '2026-05-10', reason: 'Onboarding Diagnostic Placement' }, { level: 12, date: '2026-06-20', reason: 'Baseline worksheet' }, { level: 14, date: '2026-07-04', reason: 'Mid-year worksheet' }],
-        streak: 19
+        levelHistory: [{ level: 9, date: '2026-05-10', reason: 'Baseline' }, { level: 12, date: '2026-06-20', reason: 'Baseline' }, { level: 14, date: '2026-07-04', reason: 'Mid-year' }],
       },
       {
         id: 's38',
@@ -1591,8 +3751,7 @@ export class DBStore {
         currentSubLevel: 2,
         targetLevel: 10,
         aadharMasked: 'XXXX-XXXX-1222',
-        levelHistory: [{ level: 4, date: '2026-04-25', reason: 'Onboarding Diagnostic Placement' }, { level: 9, date: '2026-06-28', reason: 'Baseline worksheet' }],
-        streak: 7
+        levelHistory: [{ level: 4, date: '2026-04-25', reason: 'Baseline' }, { level: 9, date: '2026-06-28', reason: 'Baseline' }],
       },
       {
         id: 's39',
@@ -1606,8 +3765,7 @@ export class DBStore {
         currentSubLevel: 0,
         targetLevel: 7,
         aadharMasked: 'XXXX-XXXX-1223',
-        levelHistory: [{ level: 2, date: '2026-04-10', reason: 'Onboarding Diagnostic Placement' }, { level: 4, date: '2026-05-25', reason: 'Baseline worksheet' }, { level: 6, date: '2026-07-01', reason: 'Mid-year worksheet' }],
-        streak: 11
+        levelHistory: [{ level: 2, date: '2026-04-10', reason: 'Baseline' }, { level: 4, date: '2026-05-25', reason: 'Baseline' }, { level: 6, date: '2026-07-01', reason: 'Mid-year' }],
       },
       // ── Students in Bathinda (lagging district) ──
       {
@@ -1622,8 +3780,7 @@ export class DBStore {
         currentSubLevel: 2,
         targetLevel: 3,
         aadharMasked: 'XXXX-XXXX-1224',
-        levelHistory: [{ level: 1, date: '2026-05-01', reason: 'Onboarding Diagnostic Placement' }, { level: 2, date: '2026-06-20', reason: 'Baseline worksheet' }],
-        streak: 2
+        levelHistory: [{ level: 1, date: '2026-05-01', reason: 'Baseline' }, { level: 2, date: '2026-06-20', reason: 'Baseline' }],
       },
       {
         id: 's41',
@@ -1637,8 +3794,7 @@ export class DBStore {
         currentSubLevel: 1,
         targetLevel: 2,
         aadharMasked: 'XXXX-XXXX-1225',
-        levelHistory: [{ level: 1, date: '2026-06-01', reason: 'Volunteer Diagnostic Placement' }],
-        streak: 1
+        levelHistory: [{ level: 1, date: '2026-06-01', reason: 'Baseline' }],
       },
       {
         id: 's42',
@@ -1652,8 +3808,7 @@ export class DBStore {
         currentSubLevel: 0,
         targetLevel: 4,
         aadharMasked: 'XXXX-XXXX-1226',
-        levelHistory: [{ level: 1, date: '2026-05-10', reason: 'Onboarding Diagnostic Placement' }, { level: 3, date: '2026-06-25', reason: 'Baseline worksheet' }],
-        streak: 4
+        levelHistory: [{ level: 1, date: '2026-05-10', reason: 'Baseline' }, { level: 3, date: '2026-06-25', reason: 'Baseline' }],
       },
       // ── Students in Amritsar (low-strength school) ──
       {
@@ -1668,8 +3823,7 @@ export class DBStore {
         currentSubLevel: 0,
         targetLevel: 2,
         aadharMasked: 'XXXX-XXXX-1227',
-        levelHistory: [{ level: 1, date: '2026-06-10', reason: 'Volunteer Diagnostic Placement' }],
-        streak: 1
+        levelHistory: [{ level: 1, date: '2026-06-10', reason: 'Baseline' }],
       },
       {
         id: 's44',
@@ -1683,8 +3837,7 @@ export class DBStore {
         currentSubLevel: 0,
         targetLevel: 3,
         aadharMasked: 'XXXX-XXXX-1228',
-        levelHistory: [{ level: 1, date: '2026-06-10', reason: 'Volunteer Diagnostic Placement' }, { level: 2, date: '2026-07-01', reason: 'Baseline worksheet' }],
-        streak: 2
+        levelHistory: [{ level: 1, date: '2026-06-10', reason: 'Baseline' }, { level: 2, date: '2026-07-01', reason: 'Baseline' }],
       },
       // ── Students in Jaipur Rural North ──
       {
@@ -1699,8 +3852,7 @@ export class DBStore {
         currentSubLevel: 0,
         targetLevel: 6,
         aadharMasked: 'XXXX-XXXX-1229',
-        levelHistory: [{ level: 2, date: '2026-05-15', reason: 'Onboarding Diagnostic Placement' }, { level: 5, date: '2026-06-28', reason: 'Baseline worksheet' }],
-        streak: 6
+        levelHistory: [{ level: 2, date: '2026-05-15', reason: 'Baseline' }, { level: 5, date: '2026-06-28', reason: 'Baseline' }],
       },
       {
         id: 's46',
@@ -1714,8 +3866,7 @@ export class DBStore {
         currentSubLevel: 1,
         targetLevel: 4,
         aadharMasked: 'XXXX-XXXX-1230',
-        levelHistory: [{ level: 1, date: '2026-05-20', reason: 'Volunteer Diagnostic Placement' }, { level: 3, date: '2026-07-01', reason: 'Baseline worksheet' }],
-        streak: 3
+        levelHistory: [{ level: 1, date: '2026-05-20', reason: 'Baseline' }, { level: 3, date: '2026-07-01', reason: 'Baseline' }],
       },
       // ── Unplaced students needing diagnostics ──
       {
@@ -1730,7 +3881,6 @@ export class DBStore {
         targetLevel: 2,
         aadharMasked: 'XXXX-XXXX-1231',
         levelHistory: [],
-        streak: 0
       },
       {
         id: 's_new_7',
@@ -1744,7 +3894,6 @@ export class DBStore {
         targetLevel: 2,
         aadharMasked: 'XXXX-XXXX-1232',
         levelHistory: [],
-        streak: 0
       },
       {
         id: 's_new_8',
@@ -1758,7 +3907,6 @@ export class DBStore {
         targetLevel: 2,
         aadharMasked: 'XXXX-XXXX-1233',
         levelHistory: [],
-        streak: 0
       },
       {
         id: 's_new_9',
@@ -1772,7 +3920,6 @@ export class DBStore {
         targetLevel: 2,
         aadharMasked: 'XXXX-XXXX-1234',
         levelHistory: [],
-        streak: 0
       },
       {
         id: 's_new_10',
@@ -1786,7 +3933,6 @@ export class DBStore {
         targetLevel: 2,
         aadharMasked: 'XXXX-XXXX-1235',
         levelHistory: [],
-        streak: 0
       },
       {
         id: 's_new_11',
@@ -1800,7 +3946,6 @@ export class DBStore {
         targetLevel: 2,
         aadharMasked: 'XXXX-XXXX-1236',
         levelHistory: [],
-        streak: 0
       },
       {
         id: 's_new_12',
@@ -1814,7 +3959,6 @@ export class DBStore {
         targetLevel: 2,
         aadharMasked: 'XXXX-XXXX-1237',
         levelHistory: [],
-        streak: 0
       },
       {
         id: 's_new_13',
@@ -1828,7 +3972,6 @@ export class DBStore {
         targetLevel: 2,
         aadharMasked: 'XXXX-XXXX-1238',
         levelHistory: [],
-        streak: 0
       },
       {
         id: 's_new_14',
@@ -1842,7 +3985,6 @@ export class DBStore {
         targetLevel: 2,
         aadharMasked: 'XXXX-XXXX-1239',
         levelHistory: [],
-        streak: 0
       },
       {
         id: 's_new_15',
@@ -1856,7 +3998,6 @@ export class DBStore {
         targetLevel: 2,
         aadharMasked: 'XXXX-XXXX-1240',
         levelHistory: [],
-        streak: 0
       }
     ];
 
@@ -2500,47 +4641,125 @@ export class DBStore {
 
     const interventions: Intervention[] = [
       {
-        id: 'int1', studentId: 's2', studentName: 'Jasmine Kaur', teacherId: 'u5', teacherName: 'Ritu Sharma',
-        schoolId: 'gps-mt-001', classId: 'c1', className: 'Class 2', section: 'A',
-        weakCompetencies: ['Shapes', 'Patterns'], currentLevel: 8, strategyType: 'visual_aids',
+        id: 'int1',
+        studentId: 's2',
+        studentName: 'Jasmine Kaur',
+        teacherId: 'u5',
+        teacherName: 'Ritu Sharma',
+        schoolId: 'gps-mt-001',
+        classId: 'c1',
+        className: 'Class 2',
+        section: 'A',
+        weakCompetencies: ['Shapes', 'Patterns'],
+        currentLevel: 8,
+        strategyType: 'visual_aids',
         strategyDescription: 'Used flashcards with shape outlines and colour-coded pattern strips. Practised daily for 15 minutes during morning assembly. Jasmine responded well to colour-based matching exercises.',
-        duration: '2 weeks', startDate: '2026-06-15', endDate: '2026-06-29', status: 'completed',
-        outcome: { improved: true, previousLevel: 8, newLevel: 10, improvementDetails: 'Jasmine improved from Level 8 to Level 10. Shapes recognition went from Needs Practice to Satisfactory. Pattern completion improved significantly.', assessmentId: 'ws_mid_001', detectedAt: '2026-07-02T10:00:00Z' },
-        isPromoted: true, promotedAt: '2026-07-03T08:00:00Z', createdAt: '2026-06-15T09:00:00Z'
+        duration: '2 weeks',
+        startDate: '2026-06-15',
+        endDate: '2026-06-29',
+        status: 'completed',
+        outcome: {
+          improved: true,
+          previousLevel: 8,
+          newLevel: 10,
+          improvementDetails: 'Jasmine improved from Level 8 to Level 10. Shapes recognition went from Needs Practice to Satisfactory. Pattern completion improved significantly.',
+          assessmentId: 'ws_mid_001',
+          detectedAt: '2026-07-02T10:00:00Z'
+        },
+        isPromoted: true,
+        promotedAt: '2026-07-03T08:00:00Z',
+        createdAt: '2026-06-15T09:00:00Z'
       },
       {
-        id: 'int2', studentId: 's5', studentName: 'Arjun Verma', teacherId: 'u5', teacherName: 'Ritu Sharma',
-        schoolId: 'gps-mt-001', classId: 'c1', className: 'Class 2', section: 'A',
-        weakCompetencies: ['Subtraction', 'Number Sense'], currentLevel: 6, strategyType: 'manipulatives',
+        id: 'int2',
+        studentId: 's5',
+        studentName: 'Arjun Verma',
+        teacherId: 'u5',
+        teacherName: 'Ritu Sharma',
+        schoolId: 'gps-mt-001',
+        classId: 'c1',
+        className: 'Class 2',
+        section: 'A',
+        weakCompetencies: ['Subtraction', 'Number Sense'],
+        currentLevel: 6,
+        strategyType: 'manipulatives',
         strategyDescription: 'Used physical counting beads and number blocks for hands-on subtraction practice. Grouped Arjun with two peers for peer learning during math station time.',
-        duration: '3 weeks', startDate: '2026-06-10', status: 'active', isPromoted: false, createdAt: '2026-06-10T09:00:00Z'
+        duration: '3 weeks',
+        startDate: '2026-06-10',
+        status: 'active',
+        isPromoted: false,
+        createdAt: '2026-06-10T09:00:00Z'
       },
       {
-        id: 'int3', studentId: 's19', studentName: 'Rohan Das', teacherId: 'u6_amb', teacherName: 'Meena Kumari',
-        schoolId: 'gps-amb-003', classId: 'c5', className: 'Class 3', section: 'A',
-        weakCompetencies: ['Number Operations', 'Multiplication'], currentLevel: 8, strategyType: 'game_based',
+        id: 'int3',
+        studentId: 's19',
+        studentName: 'Rohan Das',
+        teacherId: 'u6_amb',
+        teacherName: 'Meena Kumari',
+        schoolId: 'gps-amb-003',
+        classId: 'c5',
+        className: 'Class 3',
+        section: 'A',
+        weakCompetencies: ['Number Operations', 'Multiplication'],
+        currentLevel: 8,
+        strategyType: 'game_based',
         strategyDescription: 'Introduced multiplication table songs and number-line hop games. Used a dice-based addition game during break time to reinforce basic operations. Rohan showed high engagement with game-based activities.',
-        duration: '2 weeks', startDate: '2026-06-20', endDate: '2026-07-04', status: 'completed',
-        outcome: { improved: true, previousLevel: 8, newLevel: 12, improvementDetails: 'Rohan jumped from Level 8 to Level 12 (two full levels). Multiplication tables 2-5 mastered. Addition speed improved by 40%.', assessmentId: 'ws_mid_003', detectedAt: '2026-07-05T10:00:00Z' },
-        isPromoted: false, createdAt: '2026-06-20T09:00:00Z'
+        duration: '2 weeks',
+        startDate: '2026-06-20',
+        endDate: '2026-07-04',
+        status: 'completed',
+        outcome: {
+          improved: true,
+          previousLevel: 8,
+          newLevel: 12,
+          improvementDetails: 'Rohan jumped from Level 8 to Level 12 (two full levels). Multiplication tables 2-5 mastered. Addition speed improved by 40%.',
+          assessmentId: 'ws_mid_003',
+          detectedAt: '2026-07-05T10:00:00Z'
+        },
+        isPromoted: false,
+        createdAt: '2026-06-20T09:00:00Z'
       },
       {
-        id: 'int4', studentId: 's7', studentName: 'Simran Kaur', teacherId: 'u5', teacherName: 'Ritu Sharma',
-        schoolId: 'gps-mt-001', classId: 'c3', className: 'Class 1', section: 'A',
-        weakCompetencies: ['Number Sense', 'Counting'], currentLevel: 4, strategyType: 'one_on_one',
+        id: 'int4',
+        studentId: 's7',
+        studentName: 'Simran Kaur',
+        teacherId: 'u5',
+        teacherName: 'Ritu Sharma',
+        schoolId: 'gps-mt-001',
+        classId: 'c3',
+        className: 'Class 1',
+        section: 'A',
+        weakCompetencies: ['Number Sense', 'Counting'],
+        currentLevel: 4,
+        strategyType: 'one_on_one',
         strategyDescription: 'Conducted daily one-on-one counting sessions using real objects (pencils, erasers). Practised number tracing on sandpaper numbers. Focused on building confidence before introducing new concepts.',
-        duration: '1 month', startDate: '2026-06-01', status: 'active', isPromoted: false, createdAt: '2026-06-01T09:00:00Z'
+        duration: '1 month',
+        startDate: '2026-06-01',
+        status: 'active',
+        isPromoted: false,
+        createdAt: '2026-06-01T09:00:00Z'
       }
     ];
 
-    const bestPractices: BestPractice[] = [{
-      id: 'bp1', interventionId: 'int1', teacherId: 'u5', teacherName: 'Ritu Sharma', schoolId: 'gps-mt-001',
-      weakCompetencies: ['Shapes', 'Patterns'], strategyType: 'visual_aids',
-      strategyDescription: 'Used flashcards with shape outlines and colour-coded pattern strips. Practised daily for 15 minutes during morning assembly. Responded well to colour-based matching exercises.',
-      levelBefore: 8, levelAfter: 10, levelJump: 2, duration: '2 weeks',
-      tags: ['Shapes', 'Patterns', 'Visual Learning', 'Preschool 3', 'Class 1', 'Quick Win'], viewCount: 12,
-      createdAt: '2026-07-03T08:00:00Z'
-    }];
+    const bestPractices: BestPractice[] = [
+      {
+        id: 'bp1',
+        interventionId: 'int1',
+        teacherId: 'u5',
+        teacherName: 'Ritu Sharma',
+        schoolId: 'gps-mt-001',
+        weakCompetencies: ['Shapes', 'Patterns'],
+        strategyType: 'visual_aids',
+        strategyDescription: 'Used flashcards with shape outlines and colour-coded pattern strips. Practised daily for 15 minutes during morning assembly. Responded well to colour-based matching exercises.',
+        levelBefore: 8,
+        levelAfter: 10,
+        levelJump: 2,
+        duration: '2 weeks',
+        tags: ['Shapes', 'Patterns', 'Visual Learning', 'Preschool 3', 'Class 1', 'Quick Win'],
+        viewCount: 12,
+        createdAt: '2026-07-03T08:00:00Z'
+      }
+    ];
 
     return {
       users,
@@ -2551,13 +4770,42 @@ export class DBStore {
       scanPaperTemplates: [],
       worksheets,
       levelWorksheets: [],
+      levelHtmlTemplates: [],
+      questionBank: [],
       answerSubmissions,
       evaluationReports,
       tickets,
       logbook,
       announcements,
       interventions,
-      bestPractices
+      bestPractices,
+      diagnosticAnswerKeys: [],
+      certifications: [],
+      competencyRequirements: getSeedCompetencyRequirements(),
+      misconceptionClusters: [],
+      testHistory: [],
+      // Seeded empty on purpose: question logics are pedagogy authored by a real
+      // Superadmin, and inventing demo ones would put fabricated curriculum
+      // intent in front of the question-generation pipeline.
+      questionLogics: [],
+      questionTemplates: [],
+            questionOptions: [],
+      // Populated by `npm run seed:levels`, not by the demo seed — the
+      // curriculum is real data with one source, not fixture content.
+      curriculumLevels: [],
+      studentCycleLocks: [],
+
+      generationWindows: [],
+      // Seeded empty on purpose, same reasoning as questionLogics above: a
+      // teacher's observation of a real child is not something to fabricate
+      // demo data for.
+      teacherObservationRecords: [],
+      // Same reasoning again -- a child's actual hints/scaffolding evidence
+      // isn't something to fabricate demo data for either.
+      attemptRecords: [],
+      // D1.6 Candidate skills and discovered skills (#481)
+      candidateSkills: [],
+      skills: []
     };
   }
 }

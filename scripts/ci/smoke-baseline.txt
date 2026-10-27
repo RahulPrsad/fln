@@ -1,0 +1,3 @@
+# Routes that already fail in a database-less boot on main. The check fails only
+# on routes NOT listed here. Remove a line as soon as the route is fixed.
+/api/me/mfa/factors              # vault module is not wired when there is no Mongo

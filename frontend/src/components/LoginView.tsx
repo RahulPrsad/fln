@@ -1,11 +1,22 @@
+import { apiFetch } from '../services/apiClient';
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
+import React, { Suspense, lazy, useState } from 'react';
 import { Eye, EyeOff, AlertCircle, ArrowLeft } from 'lucide-react';
 import { User, UserRole } from '../types';
+
+// Loaded only in an explicitly-flagged demo build — see DemoLoginPanel.
+// The ternary is deliberate: Vite substitutes the env literal at build time, so in
+// a normal build this folds to `null` and Rollup drops the dynamic import
+// altogether. A plain `lazy(() => import(...))` would still emit the chunk as a
+// fetchable file even though nothing renders it.
+const DemoLoginPanel =
+  import.meta.env.VITE_ENABLE_DEMO_LOGINS === 'true'
+    ? lazy(() => import('./DemoLoginPanel'))
+    : null;
 
 interface LoginViewProps {
   onLoginSuccess: (token: string, user: User) => void;
@@ -19,20 +30,18 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess, onBackToHo
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
-  const mockUsersList = [
-    { label: 'Superadmin 🌐', email: 'superadmin@fln.org', pass: 'Fln@2026' },
-    { label: 'Punjab Admin 🌾', email: 'admin.pb@fln.org', pass: 'Fln@2026' },
-    { label: 'Haryana Admin 🌾', email: 'admin.hr@fln.org', pass: 'Fln@2026' },
-    { label: 'UP Admin 🏛️', email: 'admin.up@fln.org', pass: 'Fln@2026' },
-    { label: 'Rajasthan Admin 🏰', email: 'admin.rj@fln.org', pass: 'Fln@2026' },
-    { label: 'Ludhiana Dist 🏢', email: 'district.ldh@fln.org', pass: 'Fln@2026' },
-    { label: 'Ambala Dist 🏢', email: 'district.amb@fln.org', pass: 'Fln@2026' },
-    { label: 'Ludhiana Block 🏫', email: 'block.ldh-01@fln.org', pass: 'Fln@2026' },
-    { label: 'Punjab Principal 🎓', email: 'gps-mt-001@fln.org', pass: 'Fln@2026' },
-    { label: 'Haryana Teacher 👩‍🏫', email: 'gps-amb-003.t01@fln.org', pass: 'Fln@2026' },
-    { label: 'Punjab Volunteer 🤝', email: 'vol.rahul@fln.org', pass: 'Fln@2026' },
-    { label: 'Haryana Volunteer 🤝', email: 'vol.hr_vipin@fln.org', pass: 'Fln@2026' }
-  ];
+  // Demo one-click sign-in cards. OFF unless VITE_ENABLE_DEMO_LOGINS is explicitly
+  // "true" at build time, because this panel previously shipped to production and
+  // published a working Superadmin credential on the public login page.
+  //
+  // The password is not hardcoded any more — it comes from
+  // VITE_DEMO_LOGIN_PASSWORD alongside the flag. A build with the flag on but no
+  // password set renders nothing, so a partial config cannot reveal the old value.
+  // The panel itself is a lazy import so the sample addresses stay out of the
+  // production bundle entirely.
+  const showDemoLogins =
+    import.meta.env.VITE_ENABLE_DEMO_LOGINS === 'true' &&
+    !!import.meta.env.VITE_DEMO_LOGIN_PASSWORD;
 
   const handleLogin = async (e?: React.FormEvent, customEmail?: string, customPass?: string) => {
     if (e) e.preventDefault();
@@ -43,14 +52,17 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess, onBackToHo
     const loginPass = customPass || password;
 
     try {
-      const res = await fetch('/api/auth/login', {
+      const res = await apiFetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: loginEmail, password: loginPass })
       });
       const data = await res.json();
       if (res.ok) {
-        onLoginSuccess(data.token, data.user);
+        const payload = data?.data || data;
+        const token = payload?.token;
+        const user = payload?.user || payload?.teacher || payload;
+        onLoginSuccess(token, user);
       } else {
         setError(data.error || 'Invalid email or password');
       }
@@ -146,26 +158,14 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess, onBackToHo
           </button>
         </form>
 
-        {/* Quick Credentials Panel for Mock Access */}
-        <div className="mt-8 border-t-2 border-slate-100 dark:border-slate-800 pt-5">
-          <p className="text-[10px] font-extrabold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-2.5">
-            Active System Roles for Demonstration (Password: Fln@2026)
-          </p>
-          <div className="grid grid-cols-2 gap-2 text-[10px]">
-            {mockUsersList.map(u => (
-              <button
-                key={u.email}
-                onClick={() => handleLogin(undefined, u.email, u.pass)}
-                className="rounded-lg bg-slate-50 dark:bg-slate-800 p-2 text-left border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 transition hover:bg-amber-50/70 dark:hover:bg-amber-950/40 hover:border-amber-300 dark:hover:border-amber-800 hover:text-indigo-700 dark:hover:text-amber-400 cursor-pointer"
-              >
-                <div className="font-extrabold truncate text-slate-900 dark:text-white">
-                  {u.label}
-                </div>
-                <div className="truncate text-slate-400 dark:text-slate-500 text-[9px]">{u.email}</div>
-              </button>
-            ))}
-          </div>
-        </div>
+        {showDemoLogins && DemoLoginPanel && (
+          <Suspense fallback={null}>
+            <DemoLoginPanel
+              password={import.meta.env.VITE_DEMO_LOGIN_PASSWORD as string}
+              onSelect={(demoEmail, demoPass) => handleLogin(undefined, demoEmail, demoPass)}
+            />
+          </Suspense>
+        )}
 
         {/* Back to Home CTA */}
         <button

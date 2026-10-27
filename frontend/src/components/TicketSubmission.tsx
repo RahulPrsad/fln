@@ -1,3 +1,4 @@
+import { apiFetch } from '../services/apiClient';
 import React, { useState, useEffect } from 'react';
 import { Ticket, UserRole } from '../types';
 
@@ -17,7 +18,7 @@ export const TicketSubmission: React.FC<TicketSubmissionProps> = ({ token, userR
 
   const fetchTickets = async () => {
     try {
-      const res = await fetch('/api/tickets', {
+      const res = await apiFetch('/api/tickets', {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       const data = await res.json();
@@ -44,7 +45,7 @@ export const TicketSubmission: React.FC<TicketSubmissionProps> = ({ token, userR
     setLoading(true);
 
     try {
-      const res = await fetch('/api/tickets/create', {
+      const res = await apiFetch('/api/tickets/create', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -70,7 +71,7 @@ export const TicketSubmission: React.FC<TicketSubmissionProps> = ({ token, userR
 
   const handleResolve = async (ticketId: string, nextStatus: 'Reviewed' | 'Resolved') => {
     try {
-      const res = await fetch(`/api/tickets/${ticketId}/resolve`, {
+      const res = await apiFetch(`/api/tickets/${ticketId}/resolve`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -104,7 +105,7 @@ export const TicketSubmission: React.FC<TicketSubmissionProps> = ({ token, userR
 
               <div>
                 <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-200 uppercase tracking-wider mb-1">Ticket Type</label>
-                <select
+                <select aria-label="Ticket Type"
                   value={type}
                   onChange={(e) => setType(e.target.value as 'general' | 'curriculum')}
                   className="w-full text-sm border border-zinc-200 dark:border-zinc-700 rounded-lg p-2.5 bg-zinc-50 dark:bg-zinc-800 focus:border-zinc-500 focus:ring-0 outline-none text-zinc-900 dark:text-white"

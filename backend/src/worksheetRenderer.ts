@@ -1,7 +1,5 @@
-import puppeteer from 'puppeteer';
 import { getAdapter, MAX_SETS_PER_PAGE_LOAD } from './classAdapters';
-
-const CHROME_EXECUTABLE_PATH = process.env.CHROME_EXECUTABLE_PATH || undefined;
+import { launchBrowser } from './browser';
 
 export interface RenderedResult {
   index: number;
@@ -10,6 +8,13 @@ export interface RenderedResult {
   csv: string;
   coordsCaptured: boolean;
   coords: any;
+  /**
+   * Answer regions keyed by a question reference ("s0:i2:b1"), emitted by the
+   * template's `captureQuestionRegions`. Distinct from `coords`, which is keyed
+   * by layout name and cannot be joined to a question id — see the note on that
+   * function. Empty for templates that do not define it yet.
+   */
+  questionRegions?: Record<string, { page: number; x_mm: number; y_mm: number; w_mm: number; h_mm: number }>;
   questionPaperJson?: any;
 }
 
@@ -34,11 +39,7 @@ export async function renderBatch(
     throw new Error("studentIdentities must contain one entry for every generated worksheet.");
   }
 
-  const browser = await puppeteer.launch({
-    headless: true,
-    executablePath: CHROME_EXECUTABLE_PATH,
-    args: ["--no-sandbox", "--disable-setuid-sandbox"],
-  });
+  const browser = await launchBrowser();
 
   try {
     const page = await browser.newPage();
@@ -118,8 +119,16 @@ export async function renderBatch(
         }
       }
 
+      let questionRegions = null;
+      if (typeof window.captureQuestionRegions === "function") {
+        const regionTarget = document.querySelector("#ws-" + setIndex + " [data-pageid]") ||
+          document.querySelector("#ws-" + setIndex + " .page-wrapper") ||
+          document.querySelector("#ws-" + setIndex + " .page");
+        if (regionTarget) questionRegions = window.captureQuestionRegions(regionTarget);
+      }
+
       if (coords) masterJson = Object.assign({}, masterJson, { coords });
-      return { pdfBase64, masterJson, csv, coordsCaptured: Boolean(coords), coords, questionPaperJson };
+      return { pdfBase64, masterJson, csv, coordsCaptured: Boolean(coords), coords, questionRegions, questionPaperJson };
     }`;
 
     const results: RenderedResult[] = [];
@@ -133,9 +142,17 @@ export async function renderBatch(
           new Function('student', `
             const name = document.getElementById('studentName');
             const id = document.getElementById('studentId');
-            if (name) name.value = student.name || '';
-            if (id) id.value = student.studentId || student.rollNo || '';
-            window.generateSets(1);
+            if (name) {
+              name.value = student.name || '';
+              name.setAttribute('value', student.name || '');
+            }
+            if (id) {
+              id.value = student.studentId || student.rollNo || '';
+              id.setAttribute('value', student.studentId || student.rollNo || '');
+            }
+            if (typeof window.generateSets === 'function') {
+              window.generateSets(1);
+            }
           `) as any,
           student
         );
